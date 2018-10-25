@@ -32,8 +32,8 @@ volatile int windimpulse = 0;
 
 //#define DeepSleepMODE                                      // To enable Deep-sleep, you need to connect GPIO16 (D0 for NodeMcu) to the EXT_RSTB/REST (RST for NodeMcu) pin
 #ifdef DeepSleepMODE
-  #define SLEEPTIME       5                                  // deep sleep time in minutes, minimum 5min for use narodmon.com
-  #define MOSFETPIN       15                                 // GPI15 (D8 for NodeMcu). MosFET's gate pin for power supply both sensors, off in sleepmode for current drain minimize. Not connect this GPIO directly to sensors you burning it!!!
+  #define SLEEPTIME     5                                    // deep sleep time in minutes, minimum 5min for use narodmon.com and reasonable power saving
+  //#define MOSFETPIN     15                                 // experemental, GPI15 (D8 for NodeMcu). MosFET's gate pin for power supply both sensors, off in sleepmode for current drain minimize. Not connect this GPIO directly to sensors you burning it!!!
 #endif  
 
 #define BUTTON          4                                    // optional, GPIO4 for Witty Cloud. GPIO0/D3 for NodeMcu (Flash) - not work with deepsleep, set 4!
@@ -201,8 +201,8 @@ void setup() {
   WiFiManagerParameter custom_windguru_pass("windguru_pass", "windguru API pass", windguru_pass, 20);
 
 #ifdef DeepSleepMODE
-  pinMode(MOSFETPIN, OUTPUT);
-  digitalWrite(MOSFETPIN, HIGH);
+  //pinMode(MOSFETPIN, OUTPUT);
+  //digitalWrite(MOSFETPIN, HIGH);
 #endif   
 
   pinMode(LED, OUTPUT);
@@ -440,7 +440,7 @@ void timedTasks() {
         meterWind = 1;
         resetWind = false;
       } else {
-        if ((windMS > 15) && (WindMin < 2 )) { //try to filter errors of measurement as result of contact bounce (chatter) 
+        if (((windMS > 10) && (WindMin < 1 )) || ((windMS > 15) && (WindMin < 2 )) || ((windMS > 20) && (WindMin < 3 ))) { //try to filter errors of measurement as result of contact bounce (chatter) 
           mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","cur:"+String(windMS,2) + " min:"+String(WindMin,2) + " avr:"+String(WindAvr/meterWind,2) +" max:"+String(WindMax,2)).set_retain().set_qos(1));  
         } else {
           if (WindMax < windMS) WindMax = windMS;
@@ -454,16 +454,16 @@ void timedTasks() {
   //Serial.println(" meterWind: " + String(meterWind) + " windMS: " + String(windMS, 2));
   
 #ifdef DeepSleepMODE
-  if (meterWind == 5) {
-    getSensor();
+  if (meterWind == 5) { //after 5 measurements send data and go to sleep
+    getSensors();
     #ifdef USE_Narodmon
       SendToNarodmon();
     #endif
     #ifdef USE_Windguru
       SendToWindguru();
     #endif 
-    digitalWrite(MOSFETPIN, LOW);
-    ESP.deepSleep(SLEEPTIME*60000000);  // Sleep for x* minute(s)
+    //digitalWrite(MOSFETPIN, LOW);
+    ESP.deepSleep(SLEEPTIME*60000000);  // Sleep for SLEEPTIME*1 minute(s)
     delay(500);
   }
 #endif
@@ -533,9 +533,9 @@ bool SendToWindguru() { // send info to windguru.cz
      //--------------------------md5------------------------------------------------
      
      //wind speed during interval (knots)
-   getData = "uid=" + String(windguru_uid) + "&salt=" + String(time) + "&hash=" + md5.toString() + "&wind_min=" + String(WindMin * kKnots, 2) + "&wind_avg=" + String(WindAvr * kKnots/meterWind, 2) + "&wind_max=" + String(WindMax * kKnots, 2);
+     getData = "uid=" + String(windguru_uid) + "&salt=" + String(time) + "&hash=" + md5.toString() + "&wind_min=" + String(WindMin * kKnots, 2) + "&wind_avg=" + String(WindAvr * kKnots/meterWind, 2) + "&wind_max=" + String(WindMax * kKnots, 2);
      //wind_direction     wind direction as degrees (0 = north, 90 east etc...) 
-   //getData = getData + "&wind_direction=" + String(calDirection);
+     //getData = getData + "&wind_direction=" + String(calDirection);
    
      if (!isnan(dhtT)) getData = getData + "&temperature=" + String(dhtT);
      if (!isnan(dhtH)) getData = getData + "&rh=" + String(dhtH);
