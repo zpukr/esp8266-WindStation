@@ -17,6 +17,8 @@ char mqtt_pass[20];
 char kc_wind[4] = "100";
 char windguru_uid[30];
 char windguru_pass[20];
+char vaneMaxADC[5] = "1023";                                // ADC range for input voltage 0..1V
+char vaneOffset[4] = "0";                                   // define the offset for caclulating wind direction 
 
 String st;
 String content;
@@ -30,10 +32,10 @@ volatile int windimpulse = 0;
 #define USE_Narodmon
 #define USE_Windguru
 
-//#define DeepSleepMODE                                      // To enable Deep-sleep, you need to connect GPIO16 (D0 for NodeMcu) to the EXT_RSTB/REST (RST for NodeMcu) pin
-#ifdef DeepSleepMODE
+//#define DeepSleepMODE                                      // !!! To enable Deep-sleep, you need to connect GPIO16 (D0 for NodeMcu) to the EXT_RSTB/REST (RST for NodeMcu) pin
+#ifdef DeepSleepMODE										                     // Deep-sleep mode power consumption ~6mAh (3*5=15sec work/5 min sleep), instead ~80mAh in default "Always On" mode
   #define SLEEPTIME     5                                    // deep sleep time in minutes, minimum 5min for use narodmon.com and reasonable power saving
-  //#define MOSFETPIN     15                                 // experemental, GPI15 (D8 for NodeMcu). MosFET's gate pin for power supply both sensors, off in sleepmode for current drain minimize. Not connect this GPIO directly to sensors you burning it!!!
+  //#define MOSFETPIN     15                                 // Experemental!!! GPIO15 (D8 for NodeMcu). MosFET's gate pin for power supply both sensors, off in sleepmode for current drain minimize. Not connect this GPIO directly to sensors you burning it!
 #endif  
 
 #define BUTTON          4                                    // optional, GPIO4 for Witty Cloud. GPIO0/D3 for NodeMcu (Flash) - not work with deepsleep, set 4!
@@ -60,12 +62,7 @@ int kUpdFreq = 1;  //minutes
 int kRetries = 10;
 int kNarodmon = 0;
 int meterWind = 0;
-
-/*
-int VaneMaxADC = 1023;                                      // ADC range for input voltage 0..1V
-int VaneOffset = 0;                                         // define the offset for caclulating wind direction 
-int calDirection = 0;                                       // calibrated direction after offset applied
-*/
+int calDirection = 0;                                       // calibrated direction of wind vane after offset applied
 
 const float kKnots = 1.94;                                  // m/s to knots conversion   
 const int windPeriodSec = 3;                                // wind measurement period in seconds 1-10sec
@@ -112,7 +109,9 @@ void callback(const MQTT::Publish& pub) {
       json["kc_wind"] = kc_wind;
       json["windguru_uid"] = windguru_uid;
       json["windguru_pass"] = windguru_pass;
-    
+      json["vaneMaxADC"] = vaneMaxADC;
+      json["vaneOffset"] = vaneOffset;
+	  
       File configFile = SPIFFS.open("/config.json", "w");
       if (!configFile) {
         Serial.println("failed to open config file for writing");
@@ -179,6 +178,8 @@ void setup() {
           strcpy(kc_wind, json["kc_wind"]);
           strcpy(windguru_uid, json["windguru_uid"]);
           strcpy(windguru_pass, json["windguru_pass"]);
+		      strcpy(vaneMaxADC, json["vaneMaxADC"]);
+		      strcpy(vaneOffset, json["vaneOffset"]);
         } else {
           Serial.println("failed to load json config");
         }
@@ -199,6 +200,8 @@ void setup() {
   WiFiManagerParameter custom_kc_wind("kc_wind", "wind correction 1-999%", kc_wind, 4);
   WiFiManagerParameter custom_windguru_uid("windguru_uid", "windguru station UID", windguru_uid, 30);
   WiFiManagerParameter custom_windguru_pass("windguru_pass", "windguru API pass", windguru_pass, 20);
+  WiFiManagerParameter custom_vaneMaxADC("vaneMaxADC", "Max ADC value 0-1023", vaneMaxADC, 5);
+  WiFiManagerParameter custom_vaneOffset("vaneOffset", "Wind vane offset 0-359", vaneOffset, 4);
 
 #ifdef DeepSleepMODE
   //pinMode(MOSFETPIN, OUTPUT);
@@ -232,6 +235,8 @@ void setup() {
   wifiManager.addParameter(&custom_kc_wind);
   wifiManager.addParameter(&custom_windguru_uid);
   wifiManager.addParameter(&custom_windguru_pass);
+  wifiManager.addParameter(&custom_vaneMaxADC);
+  wifiManager.addParameter(&custom_vaneOffset);
   
   if(!wifiManager.autoConnect(NameAP, PasswordAP)) {
     Serial.println("failed to connect and hit timeout");
@@ -253,6 +258,8 @@ void setup() {
   strcpy(kc_wind, custom_kc_wind.getValue());
   strcpy(windguru_uid, custom_windguru_uid.getValue());
   strcpy(windguru_pass, custom_windguru_pass.getValue());
+  strcpy(vaneMaxADC, custom_vaneMaxADC.getValue());
+  strcpy(vaneOffset, custom_vaneOffset.getValue());
   
   //save the custom parameters to FS
   if (shouldSaveConfig) {
@@ -266,6 +273,8 @@ void setup() {
     json["kc_wind"] = kc_wind;
     json["windguru_uid"] = windguru_uid;
     json["windguru_pass"] = windguru_pass;
+	json["vaneMaxADC"] = vaneMaxADC;
+	json["vaneOffset"] = vaneOffset;
     
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -409,15 +418,13 @@ void getSensors() {
     Serial.println("Wind Min: " + String(WindMin, 2) + " Avr: " + String(WindAvr/meterWind, 2) + " Max: " + String(WindMax, 2));
   
     WindNarodmon = WindAvr/meterWind;
-
   }
 
-/*
   // Get Wind Direction
-  calDirection = map(analogRead(A0), 0, VaneMaxADC, 0, 359) + VaneOffset;
+  calDirection = map(analogRead(A0), 0, atoi(vaneMaxADC), 0, 359) + atoi(vaneOffset);
   if(calDirection > 360)
     calDirection = calDirection - 360;
-*/
+
   resetWind = true;
   sensorReport = false;
 }
@@ -509,7 +516,8 @@ bool SendToNarodmon() { //send info to narodmon.com
       Serial.println(buf);
       while (client.available()) {
         String line = client.readStringUntil('\r'); // redirect answer to serial port
-        Serial.println(line);      }
+        Serial.println(line);      
+      }
     }
   return true; //done
 }
