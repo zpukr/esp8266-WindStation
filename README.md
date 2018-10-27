@@ -8,4 +8,5 @@ Installation of the humidity/temperature sensor DHT-11 is option. Also, to minim
 
 Writing a program to the ESP8266 with Arduino IDE. After first run ESP start as Access Point mode with SSID "WindStationAP" and default password "87654321", spins up a DNS and WebServer (default ip 192.168.4.1). Using any wifi enabled device with a browser (computer, phone, tablet) connect to the newly created Access Point. Set some parameters and click "Save":
 ![alt tag](https://github.com/zpukr/esp8266-WindStation/blob/master/WindStationAP.jpg)
+
 ESP will try connect to internet. If successful, setting save to flash memory. If not, start as Access Point again
