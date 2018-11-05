@@ -1,7 +1,7 @@
 # esp8266-WindStation
 Simply and very low cost weather station on ESP8266 board for windguru.cz and narodmon.com for Arduino
 
-An example of building a weather station on the ESP8266 Wemos D1 mini board (cost ~$4, for comparison Holfuy Standard cost 550€), Davis Anemometer ( ~$120) and DHT11 ( ~$1):
+An example of building a weather station on the ESP8266 Wemos D1 mini board (cost ~$4), Davis Anemometer ( ~$120) and DHT11 ( ~$1):
 ![alt tag](https://github.com/zpukr/esp8266-WindStation/blob/master/windstation.jpg)
 
 Installation of the humidity/temperature sensor DHT-11 is option. You can set DHT-22 ( ~3$) or DHT-21 ( ~4$) instead it, which has a lot more accuracy and can show negative temperatures. Also, to minimize final costs, instead of the Davis Anemometer, you can use the cheap La Crosse TX23U sensor ( ~$50). Or even build an anemometer yourself from old computer fan, example on russian http://skootsone.yolasite.com/wind-pow-02.php
