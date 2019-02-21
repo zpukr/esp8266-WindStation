@@ -21,5 +21,5 @@ You can use MQTT control panel for real time viewing/adjust parameters and varia
 </details>
 
 
-MQTT Dash screenshot:
+MQTT Dash screenshot:<br>
 ![alt tag](https://raw.githubusercontent.com/zpukr/esp8266-WindStation/master/Screenshot_20190216.png) 
