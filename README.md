@@ -1,5 +1,9 @@
 # esp8266-WindStation
-See the <a href="https://github.com/zpukr/esp8266-WindStation/releases">Releases page</a> for current version
+ v1.2 OTA
+Significantly improved DeepSleepMODE, added different sleep times for day and night
+Added a new NightSleepMODE when the device periodically enters the sleep state only at night.
+Added ability to set vaneMaxADC and vaneOffset variables using MQTT
+And most importantly - the possibility of updating the firmware through the HTTP
 
 Simply and very low cost weather station on ESP8266 board for windguru.cz and narodmon.com for Arduino
 
