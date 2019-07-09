@@ -10,6 +10,7 @@
 #include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
 #include <DNSServer.h> 
 #include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson 5.13.3
+#include "TimeLib.h"
 
 char mqtt_server[30];
 char mqtt_port[6];
@@ -18,18 +19,21 @@ char mqtt_pass[20];
 char kc_wind[4] = "100";
 char windguru_uid[30];
 char windguru_pass[20];
-char vaneMaxADC[5] = "1023";                                // ADC range for input voltage 0..1V
+char vaneMaxADC[5] = "1024";                                // ADC range for input voltage 0..1V
 char vaneOffset[4] = "0";                                   // define the offset for caclulating wind direction 
 
 String st;
 String content;
 int statusCode;
+
+int debouncing_time = 3000;                                  // time in microseconds!
+unsigned long last_micros = 0;
 volatile int windimpulse = 0;
 
-#define VERSION     "\n\n-----------------  Wind Station v1.2 OTA -----------------"
+#define VERSION     "\n\n-----------------  Wind Station v1.3 OTA -----------------"
 #define NameAP      "WindStationAP"
 #define PasswordAP  "87654321"
-#define FirmwareURL "http://yourserver/firmware.bin"       //URL of firmware file for http OTA update by secret MQTT command "flash" 
+#define FirmwareURL "http://obitochna.ho.ua/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
 
 #define USE_Narodmon
 #define USE_Windguru
@@ -44,11 +48,12 @@ volatile int windimpulse = 0;
   #define TIMEEVENING   20                                   // night start at...
   #include "NtpClientLib.h" //https://github.com/gmag11/NtpClient 
 #endif  
+
 //#define MOSFETPIN       15                                   // Experemental!!! GPIO15 (D8 for NodeMcu). MosFET's gate pin for power supply sensors, off for current drain minimize. Not connect this GPIO directly to sensors you burning it! The maximum source current of GPIO is about 12mA
 
 #define BUTTON          4                                    // optional, GPIO4 for Witty Cloud. GPIO0/D3 for NodeMcu (Flash) - not work with deepsleep, set 4!
 #define LED             2                                    // GPIO2 for Witty Cloud. GPIO16/D0 for NodeMcu - not work with deepsleep, set 2!
-#define DHTPIN          14                                   // GPIO14 (D5 for NodeMcu)
+//#define DHTPIN          14                                   // GPIO14 (D5 for NodeMcu)
 #define WINDPIN         5                                    // GPIO5 (D1 for NodeMcu)
 
 #define MQTT_TOPIC      "windpoint"                          // mqtt topic (Must be unique for each device)
@@ -100,6 +105,10 @@ void callback(const MQTT::Publish& pub) {
     requestRestart = 1;
   }
   else if (pub.payload_string() == "sensor") {
+    if (minute()<10)
+      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",String(hour()) + ":0" + String(minute())).set_retain().set_qos(1));
+    else
+      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",String(hour()) + ":" + String(minute())).set_retain().set_qos(1));  
     sensorReport = true;
   }
   else if (pub.payload_string() == "adc") {
@@ -108,7 +117,6 @@ void callback(const MQTT::Publish& pub) {
   else if (pub.payload_string() == "flash") {
      WiFiClient client;
      t_httpUpdate_return ret = ESPhttpUpdate.update(client, FirmwareURL);
-     //t_httpUpdate_return ret = ESPhttpUpdate.update(client, "server", 80, "file.bin");
 
     switch (ret) {
       case HTTP_UPDATE_FAILED:
@@ -172,9 +180,19 @@ void saveConfigCallback () {
   shouldSaveConfig = true;
 }
 
+/*
 void windcount() {
   windimpulse++;
   digitalWrite(LED, !digitalRead(LED));
+}
+*/
+
+void windcount() { 
+  if((long)(micros() - last_micros) >= debouncing_time) { 
+    windimpulse++; 
+    last_micros = micros();
+    digitalWrite(LED, !digitalRead(LED)); 
+  } 
 }
 
 void setup() {
@@ -237,7 +255,7 @@ void setup() {
   WiFiManagerParameter custom_kc_wind("kc_wind", "wind correction 1-999%", kc_wind, 4);
   WiFiManagerParameter custom_windguru_uid("windguru_uid", "windguru station UID", windguru_uid, 30);
   WiFiManagerParameter custom_windguru_pass("windguru_pass", "windguru API pass", windguru_pass, 20);
-  WiFiManagerParameter custom_vaneMaxADC("vaneMaxADC", "Max ADC value 1-1023", vaneMaxADC, 5);
+  WiFiManagerParameter custom_vaneMaxADC("vaneMaxADC", "Max ADC value 1-1024", vaneMaxADC, 5);
   WiFiManagerParameter custom_vaneOffset("vaneOffset", "Wind vane offset 0-359", vaneOffset, 4);
 
 #ifdef MOSFETPIN
@@ -367,7 +385,7 @@ void setup() {
     Serial.println("\n----------------------------------------------------------------");
     Serial.println();
   }
-  attachInterrupt(WINDPIN, windcount, CHANGE);
+  attachInterrupt(WINDPIN, windcount, FALLING);
 }
 
 void loop() { 
@@ -449,12 +467,13 @@ void getSensors() {
   }
   if (isnan(dhtH) || isnan(dhtT)) {
     if (mqttClient.connected())
-    mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","DHT Read Error").set_retain().set_qos(1));
+      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","DHT Read Error").set_retain().set_qos(1));
     Serial.println("ERROR");
   } else {
     pubString = "{\"Temp\": "+String(dhtT)+", "+"\"Humidity\": "+String(dhtH) + "}";
     pubString.toCharArray(message_buff, pubString.length()+1);
-    mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/temp", message_buff).set_retain().set_qos(1));
+    if (mqttClient.connected())
+      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/temp", message_buff).set_retain().set_qos(1));
     Serial.println("OK");
   }
 #endif 
@@ -485,23 +504,29 @@ void getSensors() {
   if (a0 < 0.997*atoi(vaneMaxADC)) calDirection = 180;
     else
   if (a0 < atoi(vaneMaxADC)) calDirection = 135;
-
-  calDirection = 90; //East wind direction is the vaneMaxADC
-  if (a0 < 207) calDirection = 270;  
-    else
-  if (a0 < 335) calDirection = 315;
-    else
-  if (a0 < 510) calDirection = 0;
-      else
-  if (a0 < 691) calDirection = 225;
-      else
-  if (a0 < 842) calDirection = 45;
-    else
-  if (a0 < 944) calDirection = 180;
-    else
-  if (a0 < 1002) calDirection = 135;
   
-  calDirection = calDirection + atoi(vaneOffset);
+  if (a0 < 50) calDirection = calDirection;  
+    // skip calculation of direction if value a0 less than 50, use previous calDirection
+  else
+    {
+      if (a0 < 207) calDirection = 270;  
+        else
+      if (a0 < 335) calDirection = 315;
+        else
+      if (a0 < 510) calDirection = 0;
+        else
+      if (a0 < 691) calDirection = 225;
+        else
+      if (a0 < 842) calDirection = 45;
+        else
+      if (a0 < 944) calDirection = 180;
+        else
+      if (a0 < 1002) calDirection = 135;
+        else
+      calDirection = 90; //East wind direction is the vaneMaxADC
+      
+      calDirection = calDirection + atoi(vaneOffset);
+    }
   */
   // --------------- Wind Direction only for Ambient Weather WS-1080/WS-1090 !!!!!!!!!!!!-------------------
   
@@ -511,7 +536,8 @@ void getSensors() {
   if (meterWind > 0) { //already made measurement wind power
     pubString = "{\"Min\": "+String(WindMin, 2)+", "+"\"Avr\": "+String(WindAvr/meterWind, 2)+", "+"\"Max\": "+String(WindMax, 2)+", "+"\"Dir\": "+String(calDirection) + "}";
     pubString.toCharArray(message_buff, pubString.length()+1);
-    mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/wind", message_buff).set_retain().set_qos(1));
+    if (mqttClient.connected())
+      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/wind", message_buff).set_retain().set_qos(1));
     Serial.print(" Wind Min: " + String(WindMin, 2) + " Avr: " + String(WindAvr/meterWind, 2) + " Max: " + String(WindMax, 2) + " Dir: " + String(calDirection));
   
     WindNarodmon = WindAvr/meterWind;
@@ -525,9 +551,9 @@ void timedTasks() {
   //windPeriodSec*1sec timer
   if ((millis() > secTTasks + (windPeriodSec*1000)) || (millis() < secTTasks)) { 
     windMS = (float) windimpulse * windPeriodSec*1000 /(millis() - secTTasks) *atoi(kc_wind)/100;
-    //Serial.print("windimpulse: " + String(windimpulse) + " milis: " + String(millis() - secTTasks));
-    secTTasks = millis();
+    //Serial.println("windimpulse: " + String(windimpulse) + " milis: " + String(millis() - secTTasks));
     windimpulse = 0;
+    secTTasks = millis();
     
     if (firstRun) {
       firstRun = false;
@@ -640,7 +666,7 @@ bool SendToNarodmon() { //send info to narodmon.com
   buf = buf + "#D1#" + String(calDirection) + "\r\n";
   buf = buf + "##\r\n"; // close packet
  
-  if (!client.connect("narodmon.ru", 8283)) // try connect
+  if (!client.connect("narodmon.com", 8283)) // try connect
     {
       Serial.println("connection failed");
       return false; // fail;
