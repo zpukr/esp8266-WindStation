@@ -1,5 +1,8 @@
 # esp8266-WindStation
- v1.2 OTA <br>
+v1.3 <br>
+Add customizable switch debounce, tnx for Duyvest and minor changes
+
+v1.2 OTA <br>
 Significantly improved DeepSleepMODE, added different sleep times for day and night <br>
 Added a new NightSleepMODE when the device periodically enters the sleep state only at night. <br>
 Added ability to set vaneMaxADC and vaneOffset variables using MQTT <br>
