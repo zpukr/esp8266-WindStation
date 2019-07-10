@@ -1,4 +1,6 @@
 # esp8266-WindStation
+Port for ESP32 here: https://github.com/zpukr/esp32-WindStation <br>
+
 v1.3 <br>
 Add customizable switch debounce, tnx for Duyvest and minor changes
 
