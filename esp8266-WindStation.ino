@@ -82,7 +82,7 @@ int meterWind = 0;
 int calDirection = 0;                                       // calibrated direction of wind vane after offset applied
 
 const float kKnots = 1.94;                                  // m/s to knots conversion   
-const int windPeriodSec = 3;                                // wind measurement period in seconds 1-10sec
+const int windPeriodSec = 10;                               // wind measurement period in seconds 1-10sec
 
 float dhtH, dhtT, windMS = 0;
 float WindMax = 0, WindAvr = 0, WindMin = 0, WindNarodmon = 0;
@@ -121,9 +121,11 @@ void callback(const MQTT::Publish& pub) {
     switch (ret) {
       case HTTP_UPDATE_FAILED:
         Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+        mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", ESPhttpUpdate.getLastErrorString().c_str()).set_retain().set_qos(1));
         break;
       case HTTP_UPDATE_NO_UPDATES:
         Serial.println("HTTP_UPDATE_NO_UPDATES");
+        mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", "HTTP_UPDATE_NO_UPDATES").set_retain().set_qos(1));
         break;
       case HTTP_UPDATE_OK:
         Serial.println("HTTP_UPDATE_OK");
@@ -187,7 +189,7 @@ void windcount() {
 }
 */
 
-void windcount() { 
+void ICACHE_RAM_ATTR windcount() { 
   if((long)(micros() - last_micros) >= debouncing_time) { 
     windimpulse++; 
     last_micros = micros();
@@ -527,9 +529,9 @@ void getSensors() {
       
       calDirection = calDirection + atoi(vaneOffset);
     }
-  */
   // --------------- Wind Direction only for Ambient Weather WS-1080/WS-1090 !!!!!!!!!!!!-------------------
-  
+  */
+	
   if(calDirection > 360)
     calDirection = calDirection - 360;
     
@@ -538,7 +540,7 @@ void getSensors() {
     pubString.toCharArray(message_buff, pubString.length()+1);
     if (mqttClient.connected())
       mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/wind", message_buff).set_retain().set_qos(1));
-    Serial.print(" Wind Min: " + String(WindMin, 2) + " Avr: " + String(WindAvr/meterWind, 2) + " Max: " + String(WindMax, 2) + " Dir: " + String(calDirection));
+    Serial.print(" Wind Min: " + String(WindMin, 2) + " Avr: " + String(WindAvr/meterWind, 2) + " Max: " + String(WindMax, 2) + " Dir: " + String(calDirection)+ " ");
   
     WindNarodmon = WindAvr/meterWind;
   }
@@ -550,7 +552,7 @@ void getSensors() {
 void timedTasks() {
   //windPeriodSec*1sec timer
   if ((millis() > secTTasks + (windPeriodSec*1000)) || (millis() < secTTasks)) { 
-    windMS = (float) windimpulse * windPeriodSec*1000 /(millis() - secTTasks) *atoi(kc_wind)/100;
+    windMS = (float) windimpulse * windPeriodSec*1000 /(millis() - secTTasks) *atoi(kc_wind)/1000;
     //Serial.println("windimpulse: " + String(windimpulse) + " milis: " + String(millis() - secTTasks));
     windimpulse = 0;
     secTTasks = millis();
@@ -579,7 +581,7 @@ void timedTasks() {
   //Serial.println(" meterWind: " + String(meterWind) + " windMS: " + String(windMS, 2));
   
 #ifdef DeepSleepMODE
-  if (meterWind == 5) { //after 5 measurements send data and go to sleep
+  if (meterWind == 3) { //after 3 measurements send data and go to sleep
     getSensors();
     #ifdef USE_Narodmon
       SendToNarodmon();
@@ -607,7 +609,7 @@ void timedTasks() {
 #endif
 
 #ifdef NightSleepMODE
-  if (meterWind == 5) { //after 5 measurements send data and go to sleep, but only in night time!
+  if (meterWind == 3) { //after 3 measurements send data and go to sleep, but only in night time!
     time_t time_sync = NTP.getLastNTPSync ();
     if (time_sync!=0) {
       //int hours = (time_sync / 3600) % 24;
