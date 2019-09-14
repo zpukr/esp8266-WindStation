@@ -9,7 +9,7 @@
 #include <ESP8266httpUpdate.h>
 #include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
 #include <DNSServer.h> 
-#include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson 5.13.3
+#include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
 #include "TimeLib.h"
 
 char mqtt_server[30];
@@ -26,14 +26,14 @@ String st;
 String content;
 int statusCode;
 
-int debouncing_time = 3000;                                  // time in microseconds!
+int debouncing_time = 10000;                                  // time in microseconds!
 unsigned long last_micros = 0;
 volatile int windimpulse = 0;
 
-#define VERSION     "\n\n-----------------  Wind Station v1.3 OTA -----------------"
+#define VERSION     "\n\n-----------------  Wind Station v1.4 OTA -----------------"
 #define NameAP      "WindStationAP"
 #define PasswordAP  "87654321"
-#define FirmwareURL "http://obitochna.ho.ua/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
+#define FirmwareURL "http://yourserver/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
 
 #define USE_Narodmon
 #define USE_Windguru
@@ -115,6 +115,7 @@ void callback(const MQTT::Publish& pub) {
      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","ADC:" + String(analogRead(A0))).set_retain().set_qos(1));   
   }
   else if (pub.payload_string() == "flash") {
+     noInterrupts();
      WiFiClient client;
      t_httpUpdate_return ret = ESPhttpUpdate.update(client, FirmwareURL);
 
@@ -147,8 +148,7 @@ void callback(const MQTT::Publish& pub) {
 
       mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","saving config").set_retain().set_qos(1));
       Serial.println("saving config");
-      DynamicJsonBuffer jsonBuffer;
-      JsonObject& json = jsonBuffer.createObject();
+      DynamicJsonDocument json(1024);
       json["mqtt_server"] = mqtt_server;
       json["mqtt_port"] = mqtt_port;
       json["mqtt_user"] = mqtt_user;
@@ -164,8 +164,8 @@ void callback(const MQTT::Publish& pub) {
         Serial.println("failed to open config file for writing");
       }
 
-      json.printTo(Serial);
-      json.printTo(configFile);
+      serializeJson(json, Serial);
+      serializeJson(json, configFile);
       configFile.close();
       
       sendStatus = true;
@@ -183,7 +183,7 @@ void saveConfigCallback () {
 }
 
 /*
-void windcount() {
+void ICACHE_RAM_ATTR windcount() {
   windimpulse++;
   digitalWrite(LED, !digitalRead(LED));
 }
@@ -217,17 +217,15 @@ void setup() {
       File configFile = SPIFFS.open("/config.json", "r");
       if (configFile) {
         Serial.println("opened config file");
-        size_t size = configFile.size();
-        // Allocate a buffer to store contents of the file.
-        std::unique_ptr<char[]> buf(new char[size]);
 
-        configFile.readBytes(buf.get(), size);
-        DynamicJsonBuffer jsonBuffer;
-        JsonObject& json = jsonBuffer.parseObject(buf.get());
-        json.printTo(Serial);
-        if (json.success()) {
+        DynamicJsonDocument json(1024);
+        DeserializationError error = deserializeJson(json, configFile);
+        if (error) {
+           Serial.print(F("deserializeJson() failed with code "));
+           Serial.println(error.c_str());
+        } else {
+          serializeJson(json, Serial);
           Serial.println("\nparsed json");
-
           strcpy(mqtt_server, json["mqtt_server"]);
           strcpy(mqtt_port, json["mqtt_port"]);
           strcpy(mqtt_user, json["mqtt_user"]);
@@ -237,8 +235,6 @@ void setup() {
           strcpy(windguru_pass, json["windguru_pass"]);
           strcpy(vaneMaxADC, json["vaneMaxADC"]);
           strcpy(vaneOffset, json["vaneOffset"]);
-        } else {
-          Serial.println("failed to load json config");
         }
       }
     }
@@ -322,8 +318,7 @@ void setup() {
   //save the custom parameters to FS
   if (shouldSaveConfig) {
     Serial.println("saving config");
-    DynamicJsonBuffer jsonBuffer;
-    JsonObject& json = jsonBuffer.createObject();
+    DynamicJsonDocument json(1024);
     json["mqtt_server"] = mqtt_server;
     json["mqtt_port"] = mqtt_port;
     json["mqtt_user"] = mqtt_user;
@@ -339,8 +334,8 @@ void setup() {
       Serial.println("failed to open config file for writing");
     }
 
-    json.printTo(Serial);
-    json.printTo(configFile);
+    serializeJson(json, Serial);
+    serializeJson(json, configFile);
     configFile.close();
     //end save parameters
   
@@ -375,6 +370,7 @@ void setup() {
       mqttClient.subscribe(MQTT_TOPICo);
       blinkLED(LED, 40, 8);
       digitalWrite(LED, LOW);
+      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", "Compiled: " __DATE__ " / " __TIME__).set_retain().set_qos(1));
     }
     else {
       Serial.println(" FAILED!");
@@ -531,7 +527,6 @@ void getSensors() {
     }
   // --------------- Wind Direction only for Ambient Weather WS-1080/WS-1090 !!!!!!!!!!!!-------------------
   */
-	
   if(calDirection > 360)
     calDirection = calDirection - 360;
     
@@ -680,6 +675,39 @@ bool SendToNarodmon() { //send info to narodmon.com
         Serial.println(line);      
       }
     }
+  return true; //done
+}
+
+bool SendToNarodmonGet() { // sHTTP GET на http(s)://narodmon.com/get)
+  WiFiClient client;
+  HTTPClient http;    //Declare object of class HTTPClient
+  String getData, Link;
+  unsigned long time;
+  
+  if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
+     Link = "http://narodmon.com/get?";
+     time = millis();
+     
+     //http://narodmon.com/get?ID=MAC&mac1=value1&...&macN=valueN
+     getData = "ID=" + WiFi.macAddress() + "&W1=" + String(WindNarodmon, 2) + "&D1=" + String(calDirection);
+     if (!isnan(dhtT)) getData = getData + "&T1=" + String(dhtT);
+     if (!isnan(dhtH)) getData = getData + "&H1=" + String(dhtH);
+     
+     Serial.println(Link + getData);
+     http.begin(Link + getData);            //Specify request destination
+     int httpCode = http.GET();             //Send the request
+     if (httpCode > 0) {                    //Check the returning code
+       String payload = http.getString();   //Get the request response payload
+       Serial.println(payload);             //Print the response payload
+       if (mqttClient.connected() && (payload != "OK"))
+         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",payload).set_retain().set_qos(1));
+     }
+     http.end();   //Close connection
+   } else  {
+      Serial.println("wi-fi connection failed");
+      return false; // fail;
+   }
+  
   return true; //done
 }
 
