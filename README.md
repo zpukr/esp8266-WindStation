@@ -1,6 +1,9 @@
 # esp8266-WindStation
 Port for ESP32 here: https://github.com/zpukr/esp32-WindStation <br>
 
+v1.5
+Add support windy.com and windy.app
+
 v1.4 <br>
 Migrating ArduinoJson from version 5 to 6, minor changes
 
