@@ -1,7 +1,7 @@
 # esp8266-WindStation
 Port for ESP32 here: https://github.com/zpukr/esp32-WindStation <br>
 
-v1.5
+v1.5 <br>
 Add support windy.com and windy.app
 
 v1.4 <br>
