@@ -30,13 +30,20 @@ int debouncing_time = 10000;                                  // time in microse
 unsigned long last_micros = 0;
 volatile int windimpulse = 0;
 
-#define VERSION     "\n\n-----------------  Wind Station v1.4 OTA -----------------"
+#define VERSION     "\n\n-----------------  Wind Station v1.5 OTA -----------------"
 #define NameAP      "WindStationAP"
 #define PasswordAP  "87654321"
-#define FirmwareURL "http://yourserver/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
+#define FirmwareURL "http://server/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
 
-#define USE_Narodmon
+//#define USE_Narodmon
 #define USE_Windguru
+
+#define USE_Windy_com
+static String WindyComApiKey = "YOUR_KEY";
+
+#define USE_Windy_app
+static String WindyAppSecret = "YOUR_SECRET";
+static String WindyAppID = "YOUR_ID"; 
 
 //#define DeepSleepMODE                                        // !!! To enable Deep-sleep, you need to connect GPIO16 (D0 for NodeMcu) to the EXT_RSTB/REST (RST for NodeMcu) pin
 //#define NightSleepMODE                                       // Enable deep-sleep only in night time
@@ -580,9 +587,13 @@ void timedTasks() {
     getSensors();
     #ifdef USE_Narodmon
       SendToNarodmon();
+      //SendToNarodmonGet();
     #endif
     #ifdef USE_Windguru
       SendToWindguru();
+    #endif 
+    #ifdef USE_Windy_com
+      SendToWindy();
     #endif 
     //digitalWrite(MOSFETPIN, LOW);
     //-------------------------------------------
@@ -614,11 +625,14 @@ void timedTasks() {
         getSensors();
         #ifdef USE_Narodmon
           SendToNarodmon();
+          //SendToNarodmonGet();
         #endif
         #ifdef USE_Windguru
           SendToWindguru();
         #endif 
-    
+        #ifdef USE_Windy_com
+          SendToWindy();
+        #endif     
         Serial.println(" Good night sleep");
         ESP.deepSleep(SLEEPNIGHT*60000000);  // Sleep for night SLEEPTIME*1 minute(s);
         delay(500);
@@ -641,14 +655,20 @@ void timedTasks() {
 
 #ifdef USE_Narodmon
     if (kNarodmon >= 4) {
-        SendToNarodmon();
-        kNarodmon = 0;
+        if (SendToNarodmon()) kNarodmon = 0;
+        //SendToNarodmonGet();
       } else 
         kNarodmon++;
 #endif        
 
 #ifdef USE_Windguru
      SendToWindguru();
+#endif
+#ifdef USE_Windy_com
+     SendToWindyCom();
+#endif
+#ifdef USE_Windy_app
+     SendToWindyApp();
 #endif
   }
 }
@@ -657,8 +677,10 @@ bool SendToNarodmon() { //send info to narodmon.com
   WiFiClient client;
   String buf;
   buf = "#" + WiFi.macAddress() + "\r\n"; // header
+#ifdef DHTPIN
   if (!isnan(dhtT)) buf = buf + "#T1#" + String(dhtT) + "\r\n";
   if (!isnan(dhtH)) buf = buf + "#H1#" + String(dhtH) + "\r\n";
+#endif  
   buf = buf + "#W1#" + String(WindNarodmon, 2) + "\r\n";
   buf = buf + "#D1#" + String(calDirection) + "\r\n";
   buf = buf + "##\r\n"; // close packet
@@ -680,21 +702,21 @@ bool SendToNarodmon() { //send info to narodmon.com
 
 bool SendToNarodmonGet() { // sHTTP GET на http(s)://narodmon.com/get)
   WiFiClient client;
-  HTTPClient http;    //Declare object of class HTTPClient
+  HTTPClient http; //must be declared after WiFiClient for correct destruction order, because used by http.begin(client,...)
   String getData, Link;
   unsigned long time;
   
   if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
      Link = "http://narodmon.com/get?";
-     time = millis();
      
      //http://narodmon.com/get?ID=MAC&mac1=value1&...&macN=valueN
      getData = "ID=" + WiFi.macAddress() + "&W1=" + String(WindNarodmon, 2) + "&D1=" + String(calDirection);
+#ifdef DHTPIN
      if (!isnan(dhtT)) getData = getData + "&T1=" + String(dhtT);
      if (!isnan(dhtH)) getData = getData + "&H1=" + String(dhtH);
-     
+#endif     
      Serial.println(Link + getData);
-     http.begin(Link + getData);            //Specify request destination
+     http.begin(client, Link + getData);            //Specify request destination
      int httpCode = http.GET();             //Send the request
      if (httpCode > 0) {                    //Check the returning code
        String payload = http.getString();   //Get the request response payload
@@ -713,7 +735,7 @@ bool SendToNarodmonGet() { // sHTTP GET на http(s)://narodmon.com/get)
 
 bool SendToWindguru() { // send info to windguru.cz
   WiFiClient client;
-  HTTPClient http;    //Declare object of class HTTPClient
+  HTTPClient http; //must be declared after WiFiClient for correct destruction order, because used by http.begin(client,...)
   String getData, Link;
   unsigned long time;
   
@@ -733,12 +755,12 @@ bool SendToWindguru() { // send info to windguru.cz
      getData = "uid=" + String(windguru_uid) + "&salt=" + String(time) + "&hash=" + md5.toString() + "&wind_min=" + String(WindMin * kKnots, 2) + "&wind_avg=" + String(WindAvr * kKnots/meterWind, 2) + "&wind_max=" + String(WindMax * kKnots, 2);
      //wind_direction     wind direction as degrees (0 = north, 90 east etc...) 
      getData = getData + "&wind_direction=" + String(calDirection);
-   
+#ifdef DHTPIN   
      if (!isnan(dhtT)) getData = getData + "&temperature=" + String(dhtT);
      if (!isnan(dhtH)) getData = getData + "&rh=" + String(dhtH);
-     
+#endif     
      Serial.println(Link + getData);
-     http.begin(Link + getData);            //Specify request destination
+     http.begin(client, Link + getData);            //Specify request destination
      int httpCode = http.GET();             //Send the request
      if (httpCode > 0) {                    //Check the returning code
        String payload = http.getString();   //Get the request response payload
@@ -752,5 +774,79 @@ bool SendToWindguru() { // send info to windguru.cz
       return false; // fail;
    }
   
+  return true; //done
+}
+
+//https://stations.windy.com/pws/update/XXX-API-KEY-XXX?winddir=230&windspeedmph=12&windgustmph=12&tempf=70&rainin=0&baromin=29.1&dewptf=68.2&humidity=90  
+bool SendToWindyCom() { // send info to http://stations.windy.com/stations
+  WiFiClient client;
+  HTTPClient http; //must be declared after WiFiClient for correct destruction order, because used by http.begin(client,...)
+  String getData, Link;
+  unsigned long time;
+  
+  if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
+     Link = "http://stations.windy.com/pws/update/" + WindyComApiKey + "?";
+    
+     //wind speed during interval (knots)
+     getData = "winddir=" + String(calDirection) + "&wind=" + String(WindAvr/meterWind, 2) + "&gust=" + String(WindMax, 2);
+     
+#ifdef DHTPIN   
+     if (!isnan(dhtT)) getData = getData + "&temp=" + String(dhtT);
+     if (!isnan(dhtH)) getData = getData + "&rh=" + String(dhtH);
+#endif     
+     Serial.println(Link + getData);
+     http.begin(client, Link + getData);     //Specify request destination
+     int httpCode = http.GET();             //Send the request
+     if (httpCode > 0) {                    //Check the returning code
+       String payload = http.getString();   //Get the request response payload
+       Serial.println(payload);             //Print the response payload
+       if (mqttClient.connected() && (payload != "SUCCESS"))
+         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",payload).set_retain().set_qos(1));
+     }
+     http.end();   //Close connection
+   } else  {
+      Serial.println("wi-fi connection failed");
+      return false; // fail;
+   }
+    
+  return true; //done
+}
+
+//https://windyapp.co/apiV9.php?method=addCustomMeteostation&secret=WindyAppSecret&d5=123&a=11&m=10&g=15&i=test1
+//d5* - direction from 0 to 1024. direction in degrees is equal = (d5/1024)*360
+//a* - average wind per sending interval. for m/c - divide by 10
+//m* - minimal wind per sending interval. for m/c - divide by 10
+//g* - maximum wind per sending interval. for m/c - divide by 10
+//i* - device number
+ 
+bool SendToWindyApp() { // send info to http://windy.app/
+  WiFiClient client;
+  HTTPClient http; //must be declared after WiFiClient for correct destruction order, because used by http.begin(client,...)
+  String getData, Link;
+  unsigned long time;
+  
+  if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
+     Link = "http://windyapp.co/apiV9.php?method=addCustomMeteostation&secret=" + WindyAppSecret + "&i=" + WindyAppID +"&";
+     getData = "d5=" + String(calDirection * 1024 / 360) + "&m=" + String(WindMin *10, 0) + "&a=" + String(WindAvr/meterWind *10, 0) + "&g=" + String(WindMax *10, 0);
+     
+#ifdef DHTPIN   
+     if (!isnan(dhtT)) getData = getData + "&t2=" + String(dhtT);
+     if (!isnan(dhtH)) getData = getData + "&h=" + String(dhtH);
+#endif     
+     Serial.println(Link + getData);
+     http.begin(client, Link + getData);     //Specify request destination
+     int httpCode = http.GET();             //Send the request
+     if (httpCode > 0) {                    //Check the returning code
+       String payload = http.getString();   //Get the request response payload
+       Serial.println(payload);             //Print the response payload
+       if (mqttClient.connected() && (payload.indexOf("success") == -1))
+         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",payload).set_retain().set_qos(1));
+     }
+     http.end();   //Close connection
+   } else  {
+      Serial.println("wi-fi connection failed");
+      return false; // fail;
+   }
+    
   return true; //done
 }
