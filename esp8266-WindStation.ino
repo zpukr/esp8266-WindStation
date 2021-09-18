@@ -33,7 +33,7 @@ volatile int windimpulse = 0;
 #define VERSION     "\n\n-----------------  Wind Station v1.6 OTA -----------------"
 #define NameAP      "WindStationAP"
 #define PasswordAP  "87654321"
-#define FirmwareURL "http://obitochna.ho.ua/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
+#define FirmwareURL "http://site.com/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
 
 //#define USE_Narodmon
 #define USE_Windguru
