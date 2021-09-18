@@ -7,7 +7,7 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
-#include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
+#include "WiFiManager.h" //https://github.com/tzapu/WiFiManager
 #include <DNSServer.h> 
 #include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
 #include "TimeLib.h"
@@ -30,10 +30,10 @@ int debouncing_time = 10000;                                  // time in microse
 unsigned long last_micros = 0;
 volatile int windimpulse = 0;
 
-#define VERSION     "\n\n-----------------  Wind Station v1.5 OTA -----------------"
+#define VERSION     "\n\n-----------------  Wind Station v1.6 OTA -----------------"
 #define NameAP      "WindStationAP"
 #define PasswordAP  "87654321"
-#define FirmwareURL "http://server/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
+#define FirmwareURL "http://obitochna.ho.ua/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
 
 //#define USE_Narodmon
 #define USE_Windguru
@@ -81,7 +81,7 @@ bool sensorReport = false;
 bool resetWind = true;
 bool firstRun = true;
 
-int requestRestart = 0;
+int errors_count = 0;
 int kUpdFreq = 1;  //minutes
 int kRetries = 10;
 int kNarodmon = 0;
@@ -101,15 +101,26 @@ unsigned long secTTasks;
 unsigned long count_btn = 0;
 
 WiFiClient wifiClient;
+
 PubSubClient mqttClient(wifiClient);
 Ticker btn_timer;
+
+//------------------------------------------------------------------------------------------------------------------------------
+void IRAM_ATTR windcount() { 
+  //if((long)(micros() - last_micros) >= debouncing_time) { 
+    windimpulse++; 
+    //last_micros = micros();
+    //digitalWrite(LED, !digitalRead(LED)); 
+    digitalWrite(LED, ((windimpulse % 2) == 0) );
+  //} 
+}
 
 void callback(const MQTT::Publish& pub) {
   Serial.println("MQTT Topic: " + pub.topic() + " MQTT Payload: " + pub.payload_string());
   if (pub.payload_string() == "stat") {
   }
   else if (pub.payload_string() == "reset") {
-    requestRestart = 1;
+    errors_count = 100;
   }
   else if (pub.payload_string() == "sensor") {
     if (minute()<10)
@@ -119,24 +130,30 @@ void callback(const MQTT::Publish& pub) {
     sensorReport = true;
   }
   else if (pub.payload_string() == "adc") {
-     mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","ADC:" + String(analogRead(A0))).set_retain().set_qos(1));   
+     mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","ADC:" + String(analogRead(A0)) + " error:" + String(errors_count)).set_retain().set_qos(1));   
   }
   else if (pub.payload_string() == "flash") {
-     noInterrupts();
+     Serial.println("HTTP_UPDATE FILE: " + String(FirmwareURL));
+     //noInterrupts();
+     detachInterrupt(digitalPinToInterrupt(WINDPIN));
      WiFiClient client;
+    
+     ESPhttpUpdate.setLedPin(LED, LOW);
      t_httpUpdate_return ret = ESPhttpUpdate.update(client, FirmwareURL);
-
+     attachInterrupt(WINDPIN, windcount, FALLING);
+    
     switch (ret) {
       case HTTP_UPDATE_FAILED:
         Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
-        mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", ESPhttpUpdate.getLastErrorString().c_str()).set_retain().set_qos(1));
+        //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", ESPhttpUpdate.getLastErrorString().c_str()).set_retain().set_qos(1));
         break;
       case HTTP_UPDATE_NO_UPDATES:
         Serial.println("HTTP_UPDATE_NO_UPDATES");
-        mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", "HTTP_UPDATE_NO_UPDATES").set_retain().set_qos(1));
+        //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", "HTTP_UPDATE_NO_UPDATES").set_retain().set_qos(1));
         break;
       case HTTP_UPDATE_OK:
         Serial.println("HTTP_UPDATE_OK");
+        //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", "HTTP_UPDATE_OK").set_retain().set_qos(1));
         break;
      }
   }
@@ -187,21 +204,6 @@ bool shouldSaveConfig = false;
 void saveConfigCallback () {
   Serial.println("Should save config");
   shouldSaveConfig = true;
-}
-
-/*
-void ICACHE_RAM_ATTR windcount() {
-  windimpulse++;
-  digitalWrite(LED, !digitalRead(LED));
-}
-*/
-
-void ICACHE_RAM_ATTR windcount() { 
-  if((long)(micros() - last_micros) >= debouncing_time) { 
-    windimpulse++; 
-    last_micros = micros();
-    digitalWrite(LED, !digitalRead(LED)); 
-  } 
 }
 
 void setup() {
@@ -281,6 +283,9 @@ void setup() {
   WiFiManager wifiManager;
   wifiManager.setSaveConfigCallback(saveConfigCallback);   //set config save notify callback
 
+  std::vector<const char *> menu = {"wifi","info","param","update","close","sep","erase","restart","exit"};
+  wifiManager.setMenu(menu); // custom menu, pass vector
+  
 #ifdef DeepSleepMODE
   wifiManager.setTimeout(60); //sets timeout until configuration portal gets turned off
 #else 
@@ -383,6 +388,7 @@ void setup() {
       Serial.println(" FAILED!");
       Serial.println("\n----------------------------------------------------------------");
       Serial.println();
+      digitalWrite(LED, HIGH);
     }
   }
   else {
@@ -422,7 +428,7 @@ void button() {
     } 
     else if (count_btn > 40){
       Serial.println("\n\nESP8266 Rebooting . . . . . . . . Please Wait"); 
-      requestRestart = 1;
+      errors_count = 100;
     } 
     count_btn=0;
   }
@@ -434,13 +440,13 @@ void checkConnection() {
       Serial.println("mqtt broker connection . . . . . . . . . . OK");
     } 
     else {
-      Serial.println("mqtt broker connection . . . . . . . . . . LOST");
-      if (requestRestart < 1) requestRestart = 60;
+      errors_count = errors_count + 2;
+      Serial.println("mqtt broker connection . . . . . . . . . . LOST errors_count = " + String(errors_count));
     }
   }
   else { 
-    Serial.println("WiFi connection . . . . . . . . . . LOST");
-    if (requestRestart < 1) requestRestart = 5;
+    errors_count = errors_count + 10;
+    Serial.println("WiFi connection . . . . . . . . . . LOST errors_count = " + String(errors_count));
   }
 }
 
@@ -450,7 +456,7 @@ void checkStatus() {
     mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/adc", "{\"ADC\":" + String(analogRead(A0)) +", "+"\"MaxADC\":" + String(vaneMaxADC) + ", " + "\"Offset\":"+String(vaneOffset)+ "}").set_retain().set_qos(1)); 
     sendStatus = false;
   }
-  if (requestRestart == 1) {
+  if (errors_count >= 100) {
     blinkLED(LED, 400, 4);
     ESP.restart();
     delay(500);
@@ -491,42 +497,25 @@ void getSensors() {
 #endif     
   calDirection = map(a0, 0, atoi(vaneMaxADC), 0, 359) + atoi(vaneOffset);    
   
-  // --------------- Wind Direction only for Ambient Weather WS-1080/WS-1090 !!!!!!!!!!!!-------------------
   /*
-  calDirection = 0;
-   if (a0 >= atoi(vaneMaxADC)) calDirection = 90; //East wind direction is the vaneMaxADC
-    else
-  if (a0 < 0.796*atoi(vaneMaxADC)) calDirection = 270;  
-    else
-  if (a0 < 0.881*atoi(vaneMaxADC)) calDirection = 315;
-    else
-  if (a0 < 0.945*atoi(vaneMaxADC)) calDirection = 0;
-      else
-  if (a0 < 0.977*atoi(vaneMaxADC)) calDirection = 225;
-      else
-  if (a0 < 0.989*atoi(vaneMaxADC)) calDirection = 45;
-    else
-  if (a0 < 0.997*atoi(vaneMaxADC)) calDirection = 180;
-    else
-  if (a0 < atoi(vaneMaxADC)) calDirection = 135;
-  
-  if (a0 < 50) calDirection = calDirection;  
+  // --------------- Wind Direction only for Ambient Weather WS-1080/WS-1090 !!!!!!!!!!!!-------------------
+  if (a0 < 5) calDirection = calDirection;  
     // skip calculation of direction if value a0 less than 50, use previous calDirection
   else
     {
-      if (a0 < 207) calDirection = 270;  
+      if (a0 < 15) calDirection = 270;  
         else
-      if (a0 < 335) calDirection = 315;
+      if (a0 < 31) calDirection = 315;
         else
-      if (a0 < 510) calDirection = 0;
+      if (a0 < 63) calDirection = 0;
         else
-      if (a0 < 691) calDirection = 225;
+      if (a0 < 123) calDirection = 225;
         else
-      if (a0 < 842) calDirection = 45;
+      if (a0 < 237) calDirection = 45;
         else
-      if (a0 < 944) calDirection = 180;
+      if (a0 < 390) calDirection = 180;
         else
-      if (a0 < 1002) calDirection = 135;
+      if (a0 < 623) calDirection = 135;
         else
       calDirection = 90; //East wind direction is the vaneMaxADC
       
@@ -534,6 +523,7 @@ void getSensors() {
     }
   // --------------- Wind Direction only for Ambient Weather WS-1080/WS-1090 !!!!!!!!!!!!-------------------
   */
+	
   if(calDirection > 360)
     calDirection = calDirection - 360;
     
@@ -546,15 +536,14 @@ void getSensors() {
   
     WindNarodmon = WindAvr/meterWind;
   }
-
   resetWind = true;
   sensorReport = false;
 }
 
 void timedTasks() {
   //windPeriodSec*1sec timer
-  if ((millis() > secTTasks + (windPeriodSec*1000)) || (millis() < secTTasks)) { 
-    windMS = (float) windimpulse * windPeriodSec*1000 /(millis() - secTTasks) *atoi(kc_wind)/1000;
+  if ((millis() > secTTasks + (windPeriodSec*1000)) || (millis() < secTTasks)) {
+    windMS = (float) windimpulse * atoi(kc_wind) /(millis() - secTTasks);
     //Serial.println("windimpulse: " + String(windimpulse) + " milis: " + String(millis() - secTTasks));
     windimpulse = 0;
     secTTasks = millis();
@@ -647,11 +636,11 @@ void timedTasks() {
 
   //kUpdFreq minutes timer
   if ((millis() > TTasks + (kUpdFreq*60000)) || (millis() < TTasks)) { 
+    if ((WindMax > 2) && (WindMin == WindMax)) errors_count = errors_count + 25; // check for freeze CPU
     TTasks = millis();
     checkConnection();
     //sensorReport = true;
     getSensors();
-    if (requestRestart > 1) requestRestart--;
 
 #ifdef USE_Narodmon
     if (kNarodmon >= 4) {
@@ -736,7 +725,7 @@ bool SendToNarodmonGet() { // sHTTP GET на http(s)://narodmon.com/get)
 bool SendToWindguru() { // send info to windguru.cz
   WiFiClient client;
   HTTPClient http; //must be declared after WiFiClient for correct destruction order, because used by http.begin(client,...)
-  String getData, Link;
+  String getData = "", Link;
   unsigned long time;
   
   if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
@@ -752,7 +741,8 @@ bool SendToWindguru() { // send info to windguru.cz
      //--------------------------md5------------------------------------------------
      
      //wind speed during interval (knots)
-     getData = "uid=" + String(windguru_uid) + "&salt=" + String(time) + "&hash=" + md5.toString() + "&wind_min=" + String(WindMin * kKnots, 2) + "&wind_avg=" + String(WindAvr * kKnots/meterWind, 2) + "&wind_max=" + String(WindMax * kKnots, 2);
+     if (meterWind > 0)
+       getData = "uid=" + String(windguru_uid) + "&salt=" + String(time) + "&hash=" + md5.toString() + "&interval=" + String(meterWind * windPeriodSec) + "&wind_min=" + String(WindMin * kKnots, 2) + "&wind_avg=" + String(WindAvr * kKnots/meterWind, 2) + "&wind_max=" + String(WindMax * kKnots, 2);
      //wind_direction     wind direction as degrees (0 = north, 90 east etc...) 
      getData = getData + "&wind_direction=" + String(calDirection);
 #ifdef DHTPIN   
@@ -777,7 +767,9 @@ bool SendToWindguru() { // send info to windguru.cz
   return true; //done
 }
 
-//https://stations.windy.com/pws/update/XXX-API-KEY-XXX?winddir=230&windspeedmph=12&windgustmph=12&tempf=70&rainin=0&baromin=29.1&dewptf=68.2&humidity=90  
+//https://stations.windy.com/pws/update/XXX-API-KEY-XXX?winddir=230&windspeedmph=12&windgustmph=12&tempf=70&rainin=0&baromin=29.1&dewptf=68.2&humidity=90
+//We will be displaying data in 5 minutes steps. So, it's not nessary send us data every minute, 5 minutes will be fine.
+//https://community.windy.com/topic/8168/report-your-weather-station-data-to-windy  
 bool SendToWindyCom() { // send info to http://stations.windy.com/stations
   WiFiClient client;
   HTTPClient http; //must be declared after WiFiClient for correct destruction order, because used by http.begin(client,...)
@@ -785,10 +777,11 @@ bool SendToWindyCom() { // send info to http://stations.windy.com/stations
   unsigned long time;
   
   if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
-     Link = "http://stations.windy.com/pws/update/" + WindyComApiKey + "?";
+     Link = "http://stations.windy.com/pws/update/" + WindyComApiKey + "?name=AzovKite&";
     
      //wind speed during interval (knots)
-     getData = "winddir=" + String(calDirection) + "&wind=" + String(WindAvr/meterWind, 2) + "&gust=" + String(WindMax, 2);
+     if (meterWind > 0)
+       getData = "winddir=" + String(calDirection) + "&wind=" + String(WindAvr/meterWind, 2) + "&gust=" + String(WindMax, 2);
      
 #ifdef DHTPIN   
      if (!isnan(dhtT)) getData = getData + "&temp=" + String(dhtT);
@@ -801,7 +794,7 @@ bool SendToWindyCom() { // send info to http://stations.windy.com/stations
        String payload = http.getString();   //Get the request response payload
        Serial.println(payload);             //Print the response payload
        if (mqttClient.connected() && (payload != "SUCCESS"))
-         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",payload).set_retain().set_qos(1));
+         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", payload).set_retain().set_qos(1));
      }
      http.end();   //Close connection
    } else  {
@@ -812,7 +805,7 @@ bool SendToWindyCom() { // send info to http://stations.windy.com/stations
   return true; //done
 }
 
-//https://windyapp.co/apiV9.php?method=addCustomMeteostation&secret=WindyAppSecret&d5=123&a=11&m=10&g=15&i=test1
+//https://windyapp.co/apiV9.php?method=addCustomMeteostation&secret=WindyAPPSecret&d5=123&a=11&m=10&g=15&i=test1
 //d5* - direction from 0 to 1024. direction in degrees is equal = (d5/1024)*360
 //a* - average wind per sending interval. for m/c - divide by 10
 //m* - minimal wind per sending interval. for m/c - divide by 10
@@ -822,17 +815,19 @@ bool SendToWindyCom() { // send info to http://stations.windy.com/stations
 bool SendToWindyApp() { // send info to http://windy.app/
   WiFiClient client;
   HTTPClient http; //must be declared after WiFiClient for correct destruction order, because used by http.begin(client,...)
-  String getData, Link;
+  String getData= "", Link;
   unsigned long time;
   
   if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
      Link = "http://windyapp.co/apiV9.php?method=addCustomMeteostation&secret=" + WindyAppSecret + "&i=" + WindyAppID +"&";
-     getData = "d5=" + String(calDirection * 1024 / 360) + "&m=" + String(WindMin *10, 0) + "&a=" + String(WindAvr/meterWind *10, 0) + "&g=" + String(WindMax *10, 0);
+     if (meterWind > 0)
+       getData = "d5=" + String(map(calDirection, 0, 359, 1, 1024)) + "&m=" + String(WindMin *10, 0) + "&a=" + String(WindAvr/meterWind *10, 0) + "&g=" + String(WindMax *10, 0);
      
 #ifdef DHTPIN   
      if (!isnan(dhtT)) getData = getData + "&t2=" + String(dhtT);
      if (!isnan(dhtH)) getData = getData + "&h=" + String(dhtH);
 #endif     
+     getData.replace(" ", "");  
      Serial.println(Link + getData);
      http.begin(client, Link + getData);     //Specify request destination
      int httpCode = http.GET();             //Send the request
@@ -840,7 +835,7 @@ bool SendToWindyApp() { // send info to http://windy.app/
        String payload = http.getString();   //Get the request response payload
        Serial.println(payload);             //Print the response payload
        if (mqttClient.connected() && (payload.indexOf("success") == -1))
-         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",payload).set_retain().set_qos(1));
+         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", getData + ">" + payload).set_retain().set_qos(1));
      }
      http.end();   //Close connection
    } else  {
