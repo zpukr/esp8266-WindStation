@@ -705,13 +705,13 @@ void timedTasks() {
 #endif        
 
 #ifdef USE_Windguru
-     SendToWindguru();
+     if (!SendToWindguru()) errors_count++;
 #endif
 #ifdef USE_Windy_com
-     SendToWindyCom();
+     if (!SendToWindyCom()) errors_count++;
 #endif
 #ifdef USE_Windy_app
-     SendToWindyApp();
+     if (!SendToWindyApp()) errors_count++;
 #endif
   }
 }
@@ -849,8 +849,7 @@ bool SendToWindyCom() { // send info to http://stations.windy.com/stations
      if (httpCode > 0) {                    //Check the returning code
        String payload = http.getString();   //Get the request response payload
        Serial.println(payload);             //Print the response payload
-       if (mqttClient.connected() && (payload != "SUCCESS"))
-         //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", payload).set_retain().set_qos(1));
+       if (mqttClient.connected() && (payload.indexOf("SUCCESS") == -1))
          mqttClient.publish("debug", payload.c_str());
      }
      http.end();   //Close connection
@@ -890,6 +889,8 @@ bool SendToWindyApp() { // send info to http://windy.app/
      httpsClient.setInsecure(); // this is the magical line that makes everything work
      if (!httpsClient.connect(host, httpPort)) { //works!
        Serial.println("https connection failed");
+       if (mqttClient.connected())
+         mqttClient.publish("debug", "windyapp.co https connection failed");
        return false;
      }
 
