@@ -2,10 +2,11 @@
 
 #include "DHT.h" //https://github.com/adafruit/DHT-sensor-library
 #include <ESP8266WiFi.h>
-#include "PubSubClient.h"
+#include <PubSubClient.h>
 #include <Ticker.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ESP8266httpUpdate.h>
 #include "WiFiManager.h" //https://github.com/tzapu/WiFiManager
 #include <DNSServer.h> 
@@ -30,7 +31,7 @@ int debouncing_time = 10000;                                  // time in microse
 unsigned long last_micros = 0;
 volatile int windimpulse = 0;
 
-#define VERSION     "\n\n-----------------  Wind Station v1.6 OTA -----------------"
+#define VERSION     "\n\n-----------------  Wind Station v1.7 OTA -----------------"
 #define NameAP      "WindStationAP"
 #define PasswordAP  "87654321"
 #define FirmwareURL "http://site.com/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
@@ -101,8 +102,10 @@ unsigned long secTTasks;
 unsigned long count_btn = 0;
 
 WiFiClient wifiClient;
-
 PubSubClient mqttClient(wifiClient);
+#define MSG_BUFFER_SIZE  (50)
+char msg_buff[MSG_BUFFER_SIZE];
+
 Ticker btn_timer;
 
 //------------------------------------------------------------------------------------------------------------------------------
@@ -115,24 +118,29 @@ void IRAM_ATTR windcount() {
   //} 
 }
 
-void callback(const MQTT::Publish& pub) {
-  Serial.println("MQTT Topic: " + pub.topic() + " MQTT Payload: " + pub.payload_string());
-  if (pub.payload_string() == "stat") {
+void callback(char* topic, byte* payload, unsigned int length) {
+  String payload_string = String((char*)payload);
+  payload_string = payload_string.substring(0, length);
+  Serial.println("MQTT Topic: " + String(topic) + " MQTT Payload: " + payload_string);
+  if (payload_string == "stat") {
   }
-  else if (pub.payload_string() == "reset") {
+  else if (payload_string == "reset") {
     errors_count = 100;
   }
-  else if (pub.payload_string() == "sensor") {
+  else if (payload_string == "sensor") {
     if (minute()<10)
-      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",String(hour()) + ":0" + String(minute())).set_retain().set_qos(1));
+      //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",String(hour()) + ":0" + String(minute())).set_retain().set_qos(1));
+      mqttClient.publish("debug", (String(hour()) + ":0" + String(minute())).c_str());
     else
-      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",String(hour()) + ":" + String(minute())).set_retain().set_qos(1));  
+      //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",String(hour()) + ":" + String(minute())).set_retain().set_qos(1));  
+      mqttClient.publish("debug", (String(hour()) + ":" + String(minute())).c_str());  
     sensorReport = true;
   }
-  else if (pub.payload_string() == "adc") {
-     mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","ADC:" + String(analogRead(A0)) + " error:" + String(errors_count)).set_retain().set_qos(1));   
+  else if (payload_string == "adc") {
+     //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","ADC:" + String(analogRead(A0)) + " error:" + String(errors_count)).set_retain().set_qos(1));   
+     mqttClient.publish("debug",("ADC:" + String(analogRead(A0)) + " error:" + String(errors_count)).c_str());   
   }
-  else if (pub.payload_string() == "flash") {
+  else if (payload_string == "flash") {
      Serial.println("HTTP_UPDATE FILE: " + String(FirmwareURL));
      //noInterrupts();
      detachInterrupt(digitalPinToInterrupt(WINDPIN));
@@ -158,19 +166,20 @@ void callback(const MQTT::Publish& pub) {
      }
   }
   else { 
-    str = pub.payload_string();
+    str = payload_string;
     int i = atoi(str.c_str());
     if ((i >= 0) && (i < 9999)) {
-      if (pub.topic() == MQTT_TOPIC) //we got kc_wind?
+      if (String(topic) == MQTT_TOPIC) //we got kc_wind?
         strcpy(kc_wind, String(i).c_str());
       else
-      if (pub.topic() == MQTT_TOPICm) //we got vaneMaxADC?
+      if (String(topic) == MQTT_TOPICm) //we got vaneMaxADC?
         strcpy(vaneMaxADC, String(i).c_str());
       else  
-      if (pub.topic() == MQTT_TOPICo) //we got vaneOffset?       
+      if (String(topic) == MQTT_TOPICo) //we got vaneOffset?       
         strcpy(vaneOffset, String(i).c_str());
 
-      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","saving config").set_retain().set_qos(1));
+      //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","saving config").set_retain().set_qos(1));
+      mqttClient.publish("debug","saving config");
       Serial.println("saving config");
       DynamicJsonDocument json(1024);
       json["mqtt_server"] = mqtt_server;
@@ -203,6 +212,11 @@ bool shouldSaveConfig = false;
 //callback notifying us of the need to save config
 void saveConfigCallback () {
   Serial.println("Should save config");
+  shouldSaveConfig = true;
+}
+
+void SaveParamsCallback () {
+  Serial.println("Should save params");
   shouldSaveConfig = true;
 }
 
@@ -278,7 +292,7 @@ void setup() {
   firstRun = true;
   btn_timer.attach(0.05, button);
   
-  mqttClient.set_callback(callback);
+  mqttClient.setCallback(callback);
 
   WiFiManager wifiManager;
   wifiManager.setSaveConfigCallback(saveConfigCallback);   //set config save notify callback
@@ -368,8 +382,13 @@ void setup() {
     Serial.print("macAddress is: "); Serial.println(WiFi.macAddress());
     Serial.print("Connecting to ");Serial.print(mqtt_server);Serial.print(" Broker . .");
     delay(500);
-    mqttClient.set_server(mqtt_server, atoi(mqtt_port));
-    while (!mqttClient.connect(MQTT::Connect(String(ESP.getChipId(), HEX)).set_keepalive(90).set_auth(mqtt_user, mqtt_pass)) && kRetries --) {
+    mqttClient.setServer(mqtt_server, atoi(mqtt_port));
+    mqttClient.setSocketTimeout(70);
+    mqttClient.setKeepAlive(70);
+    while (!mqttClient.connected()&& kRetries --) {
+    //while (!mqttClient.connect(MQTT::Connect(String(ESP.getChipId(), HEX)).set_keepalive(90).set_auth(mqtt_user, mqtt_pass)) && kRetries --) {
+      String str = String(ESP.getChipId(), HEX);
+      mqttClient.connect(str.c_str(), mqtt_user, mqtt_pass);
       Serial.print(" .");
       delay(1000);
     }
@@ -382,7 +401,8 @@ void setup() {
       mqttClient.subscribe(MQTT_TOPICo);
       blinkLED(LED, 40, 8);
       digitalWrite(LED, LOW);
-      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", "Compiled: " __DATE__ " / " __TIME__).set_retain().set_qos(1));
+      //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", "Compiled: " __DATE__ " / " __TIME__).set_retain().set_qos(1));
+      mqttClient.publish("debug", "Compiled: " __DATE__ " / " __TIME__);
     }
     else {
       Serial.println(" FAILED!");
@@ -440,7 +460,7 @@ void checkConnection() {
       Serial.println("mqtt broker connection . . . . . . . . . . OK");
     } 
     else {
-      errors_count = errors_count + 2;
+      errors_count = errors_count + 5;
       Serial.println("mqtt broker connection . . . . . . . . . . LOST errors_count = " + String(errors_count));
     }
   }
@@ -452,8 +472,10 @@ void checkConnection() {
 
 void checkStatus() {
   if (sendStatus) {
-    mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/kc_wind", String(kc_wind)).set_retain().set_qos(1));
-    mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/adc", "{\"ADC\":" + String(analogRead(A0)) +", "+"\"MaxADC\":" + String(vaneMaxADC) + ", " + "\"Offset\":"+String(vaneOffset)+ "}").set_retain().set_qos(1)); 
+    //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/kc_wind", String(kc_wind)).set_retain().set_qos(1));
+    mqttClient.publish("kc_wind", String(kc_wind).c_str());
+    //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/adc", "{\"ADC\":" + String(analogRead(A0)) +", "+"\"MaxADC\":" + String(vaneMaxADC) + ", " + "\"Offset\":"+String(vaneOffset)+ "}").set_retain().set_qos(1)); 
+    mqttClient.publish("adc", ("{\"ADC\":" + String(analogRead(A0)) +", "+"\"MaxADC\":" + String(vaneMaxADC) + ", " + "\"Offset\":"+String(vaneOffset)+ "}").c_str()); 
     sendStatus = false;
   }
   if (errors_count >= 100) {
@@ -464,7 +486,6 @@ void checkStatus() {
 }
 
 void getSensors() {
-  char message_buff[60];
   String pubString;
 #ifdef DHTPIN
   Serial.print("DHT read . . . . . . . . . . . . . . . . . ");  
@@ -495,14 +516,46 @@ void getSensors() {
   if (mqttClient.connected())
     mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","ADC:" + String(a0) + " " + NTP.getTimeDateString ()).set_retain().set_qos(1));
 #endif     
-  calDirection = map(a0, 0, atoi(vaneMaxADC), 0, 359) + atoi(vaneOffset);    
+  //calDirection = map(a0, 0, atoi(vaneMaxADC), 0, 359) + atoi(vaneOffset);    
   
-  /*
   // --------------- Wind Direction only for Ambient Weather WS-1080/WS-1090 !!!!!!!!!!!!-------------------
+  /*
+  calDirection = 0;
+   if (a0 >= atoi(vaneMaxADC)) calDirection = 90; //East wind direction is the vaneMaxADC
+    else
+  if (a0 < 0.796*atoi(vaneMaxADC)) calDirection = 270;  
+    else
+  if (a0 < 0.881*atoi(vaneMaxADC)) calDirection = 315;
+    else
+  if (a0 < 0.945*atoi(vaneMaxADC)) calDirection = 0;
+      else
+  if (a0 < 0.977*atoi(vaneMaxADC)) calDirection = 225;
+      else
+  if (a0 < 0.989*atoi(vaneMaxADC)) calDirection = 45;
+    else
+  if (a0 < 0.997*atoi(vaneMaxADC)) calDirection = 180;
+    else
+  if (a0 < atoi(vaneMaxADC)) calDirection = 135;
+  */
   if (a0 < 5) calDirection = calDirection;  
     // skip calculation of direction if value a0 less than 50, use previous calDirection
   else
     {
+      /*if (a0 < 207) calDirection = 270;  
+        else
+      if (a0 < 335) calDirection = 315;
+        else
+      if (a0 < 510) calDirection = 0;
+        else
+      if (a0 < 691) calDirection = 225;
+        else
+      if (a0 < 842) calDirection = 45;
+        else
+      if (a0 < 944) calDirection = 180;
+        else
+      if (a0 < 1002) calDirection = 135;
+        else*/
+
       if (a0 < 15) calDirection = 270;  
         else
       if (a0 < 31) calDirection = 315;
@@ -522,16 +575,16 @@ void getSensors() {
       calDirection = calDirection + atoi(vaneOffset);
     }
   // --------------- Wind Direction only for Ambient Weather WS-1080/WS-1090 !!!!!!!!!!!!-------------------
-  */
-	
+  
   if(calDirection > 360)
     calDirection = calDirection - 360;
     
   if (meterWind > 0) { //already made measurement wind power
     pubString = "{\"Min\": "+String(WindMin, 2)+", "+"\"Avr\": "+String(WindAvr/meterWind, 2)+", "+"\"Max\": "+String(WindMax, 2)+", "+"\"Dir\": "+String(calDirection) + "}";
-    pubString.toCharArray(message_buff, pubString.length()+1);
+    pubString.toCharArray(msg_buff, pubString.length()+1);
     if (mqttClient.connected())
-      mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/wind", message_buff).set_retain().set_qos(1));
+      //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/wind", message_buff).set_retain().set_qos(1));
+      mqttClient.publish("wind", msg_buff);
     Serial.print(" Wind Min: " + String(WindMin, 2) + " Avr: " + String(WindAvr/meterWind, 2) + " Max: " + String(WindMax, 2) + " Dir: " + String(calDirection)+ " ");
   
     WindNarodmon = WindAvr/meterWind;
@@ -559,7 +612,8 @@ void timedTasks() {
         resetWind = false;
       } else {
         if (((windMS > 10) && (WindMin < 1 )) || ((windMS > 15) && (WindMin < 2 )) || ((windMS > 20) && (WindMin < 3 ))) { //try to filter errors of measurement as result of contact bounce (chatter) 
-          mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","cur:"+String(windMS,2) + " min:"+String(WindMin,2) + " avr:"+String(WindAvr/meterWind,2) +" max:"+String(WindMax,2)).set_retain().set_qos(1));  
+          //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","cur:"+String(windMS,2) + " min:"+String(WindMin,2) + " avr:"+String(WindAvr/meterWind,2) +" max:"+String(WindMax,2)).set_retain().set_qos(1));  
+          mqttClient.publish("debug", ("cur:" + String(windMS,2) + " min:"+String(WindMin,2) + " avr:" + String(WindAvr/meterWind,2) +" max:" + String(WindMax,2)).c_str());
         } else {
 		  if (WindMax < windMS) WindMax = windMS;
           if (WindMin > windMS) WindMin = windMS;
@@ -711,7 +765,8 @@ bool SendToNarodmonGet() { // sHTTP GET на http(s)://narodmon.com/get)
        String payload = http.getString();   //Get the request response payload
        Serial.println(payload);             //Print the response payload
        if (mqttClient.connected() && (payload != "OK"))
-         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",payload).set_retain().set_qos(1));
+         //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",payload).set_retain().set_qos(1));
+         mqttClient.publish("debug", payload.c_str());
      }
      http.end();   //Close connection
    } else  {
@@ -756,7 +811,8 @@ bool SendToWindguru() { // send info to windguru.cz
        String payload = http.getString();   //Get the request response payload
        Serial.println(payload);             //Print the response payload
        if (mqttClient.connected() && (payload != "OK"))
-         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",payload).set_retain().set_qos(1));
+         //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug",payload).set_retain().set_qos(1));
+         mqttClient.publish("debug", payload.c_str());
      }
      http.end();   //Close connection
    } else  {
@@ -794,7 +850,8 @@ bool SendToWindyCom() { // send info to http://stations.windy.com/stations
        String payload = http.getString();   //Get the request response payload
        Serial.println(payload);             //Print the response payload
        if (mqttClient.connected() && (payload != "SUCCESS"))
-         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", payload).set_retain().set_qos(1));
+         //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", payload).set_retain().set_qos(1));
+         mqttClient.publish("debug", payload.c_str());
      }
      http.end();   //Close connection
    } else  {
@@ -813,13 +870,11 @@ bool SendToWindyCom() { // send info to http://stations.windy.com/stations
 //i* - device number
  
 bool SendToWindyApp() { // send info to http://windy.app/
-  WiFiClient client;
-  HTTPClient http; //must be declared after WiFiClient for correct destruction order, because used by http.begin(client,...)
+  const char* host = "windyapp.co"; // only google.com not https://google.com
   String getData= "", Link;
-  unsigned long time;
   
   if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
-     Link = "http://windyapp.co/apiV9.php?method=addCustomMeteostation&secret=" + WindyAppSecret + "&i=" + WindyAppID +"&";
+     Link = "/apiV9.php?method=addCustomMeteostation&secret=" + WindyAppSecret + "&i=" + WindyAppID +"&";
      if (meterWind > 0)
        getData = "d5=" + String(map(calDirection, 0, 359, 1, 1024)) + "&m=" + String(WindMin *10, 0) + "&a=" + String(WindAvr/meterWind *10, 0) + "&g=" + String(WindMax *10, 0);
      
@@ -828,16 +883,44 @@ bool SendToWindyApp() { // send info to http://windy.app/
      if (!isnan(dhtH)) getData = getData + "&h=" + String(dhtH);
 #endif     
      getData.replace(" ", "");  
-     Serial.println(Link + getData);
-     http.begin(client, Link + getData);     //Specify request destination
-     int httpCode = http.GET();             //Send the request
-     if (httpCode > 0) {                    //Check the returning code
-       String payload = http.getString();   //Get the request response payload
-       Serial.println(payload);             //Print the response payload
-       if (mqttClient.connected() && (payload.indexOf("success") == -1))
-         mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug", getData + ">" + payload).set_retain().set_qos(1));
+     
+     // Use WiFiClient class to create TCP connections
+     WiFiClientSecure httpsClient;
+     const int httpPort = 443; // 80 is for HTTP / 443 is for HTTPS!
+     httpsClient.setInsecure(); // this is the magical line that makes everything work
+     if (!httpsClient.connect(host, httpPort)) { //works!
+       Serial.println("https connection failed");
+       return false;
      }
-     http.end();   //Close connection
+
+     // We now create a URI for the request
+     String url = Link + getData;
+
+     // This will send the request to the server
+     Serial.println("request sent: " + url);
+     httpsClient.print(String("GET ") + url + " HTTP/1.1\r\n" +
+               "Host: " + host + "\r\n" + 
+               "Connection: close\r\n\r\n");
+                  
+     while (httpsClient.connected()) {
+       String line = httpsClient.readStringUntil('\n');
+       if (line == "\r") {
+         Serial.println("headers received");
+         break;
+       }
+     }
+
+     String payload;
+     while(httpsClient.available()){        
+       payload = httpsClient.readString();  //Read Line by Line
+     }
+     payload.replace("\n", "/");
+     Serial.println("reply was: " + payload); //Print response
+     if (mqttClient.connected() && (payload.indexOf("success") == -1)) {
+       payload = getData + "> " +payload;
+       mqttClient.publish("debug", payload.c_str());
+     }
+
    } else  {
       Serial.println("wi-fi connection failed");
       return false; // fail;
