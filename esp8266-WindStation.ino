@@ -1,6 +1,4 @@
 #include <FS.h> //this needs to be first, or it all crashes and burns...
-
-#include "DHT.h" //https://github.com/adafruit/DHT-sensor-library
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <Ticker.h>
@@ -8,10 +6,16 @@
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ESP8266httpUpdate.h>
-#include "WiFiManager.h" //https://github.com/tzapu/WiFiManager
+#include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
 #include <DNSServer.h> 
 #include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
+#include "DHT.h" //https://github.com/adafruit/DHT-sensor-library
 #include "TimeLib.h"
+
+#define VERSION     "\n\n-----------------  Wind Station v1.8 OTA -----------------"
+#define NameAP      "WindStationAP"
+#define PasswordAP  "87654321"
+#define FirmwareURL "http://yoursite.com/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
 
 char mqtt_server[30];
 char mqtt_port[6];
@@ -23,6 +27,41 @@ char windguru_pass[20];
 char vaneMaxADC[5] = "1024";                                // ADC range for input voltage 0..1V
 char vaneOffset[4] = "0";                                   // define the offset for caclulating wind direction 
 
+char OWM_key[36] = "";      // OpenWeatherMap.org key
+char OWM_lat[8] = "42.96";
+char OWM_lon[8] = "27.90";
+
+char WindyComApiKey[128] = "";
+char WindyComName[16] = "";
+
+char WindyAppSecret[16] = ""; 
+char WindyAppID[16] = ""; 
+
+
+WiFiManager wifiManager;
+// The extra parameters to be configured (can be either global or just in the setup)
+// After connecting, parameter.getValue() will get you the configured value
+// id/name placeholder/prompt default length
+WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 30);
+WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
+WiFiManagerParameter custom_mqtt_user("user", "mqtt user", mqtt_user, 20);
+WiFiManagerParameter custom_mqtt_pass("pass", "mqtt password", mqtt_pass, 20);
+WiFiManagerParameter custom_kc_wind("kc_wind", "wind correction 1-999%", kc_wind, 4);
+WiFiManagerParameter custom_windguru_uid("windguru_uid", "windguru station UID", windguru_uid, 30);
+WiFiManagerParameter custom_windguru_pass("windguru_pass", "windguru API pass", windguru_pass, 20);
+WiFiManagerParameter custom_vaneMaxADC("vaneMaxADC", "Max ADC value 1-1024", vaneMaxADC, 5);
+WiFiManagerParameter custom_vaneOffset("vaneOffset", "Wind vane offset 0-359", vaneOffset, 4);
+
+WiFiManagerParameter custom_OWM_key("OWM_key", "OpenWeatherMap key", OWM_key, 36);
+WiFiManagerParameter custom_OWM_lat("OWM_lat", "Lat **.**", OWM_lat, 8);
+WiFiManagerParameter custom_OWM_lon("OWM_lon", "Lon **.**", OWM_lon, 8);
+
+WiFiManagerParameter custom_WindyComApiKey("WindyComApiKey", "Windy.com ApiKey", WindyComApiKey, 128);
+WiFiManagerParameter custom_WindyComName("WindyComName", "Windy.com Name", WindyComName, 16);
+
+WiFiManagerParameter custom_WindyAppSecret("WindyAppSecret", "Windy.app Secret", WindyAppSecret, 16);
+WiFiManagerParameter custom_WindyAppID("WindyAppID", "Windy.app ID", WindyAppID, 16);
+
 String st;
 String content;
 int statusCode;
@@ -31,20 +70,11 @@ int debouncing_time = 10000;                                  // time in microse
 unsigned long last_micros = 0;
 volatile int windimpulse = 0;
 
-#define VERSION     "\n\n-----------------  Wind Station v1.7 OTA -----------------"
-#define NameAP      "WindStationAP"
-#define PasswordAP  "87654321"
-#define FirmwareURL "http://site.com/firmware.bin"   //URL of firmware file for http OTA update by secret MQTT command "flash" 
-
 //#define USE_Narodmon
 #define USE_Windguru
-
+#define USE_OpenWeatherMap //If you do not have a wind direction sensor, you can get an approximate value from the website OpenWeatherMap
 #define USE_Windy_com
-static String WindyComApiKey = "YOUR_KEY";
-
 #define USE_Windy_app
-static String WindyAppSecret = "YOUR_SECRET";
-static String WindyAppID = "YOUR_ID"; 
 
 //#define DeepSleepMODE                                        // !!! To enable Deep-sleep, you need to connect GPIO16 (D0 for NodeMcu) to the EXT_RSTB/REST (RST for NodeMcu) pin
 //#define NightSleepMODE                                       // Enable deep-sleep only in night time
@@ -86,6 +116,7 @@ int errors_count = 0;
 int kUpdFreq = 1;  //minutes
 int kRetries = 10;
 int kNarodmon = 0;
+int kOpenWeatherMap = 0;
 int meterWind = 0;
 int calDirection = 0;                                       // calibrated direction of wind vane after offset applied
 
@@ -113,8 +144,15 @@ void IRAM_ATTR windcount() {
   //if((long)(micros() - last_micros) >= debouncing_time) { 
     windimpulse++; 
     //last_micros = micros();
-    //digitalWrite(LED, !digitalRead(LED)); 
-    digitalWrite(LED, ((windimpulse % 2) == 0) );
+    //digitalWrite(LED, ((windimpulse % 2) == 0) );
+    switch (windimpulse % 4) {
+      case 1:
+        digitalWrite(LED, true);
+        break;
+      case 3:
+        digitalWrite(LED, false);
+        break;
+    }
   //} 
 }
 
@@ -181,44 +219,80 @@ void callback(char* topic, byte* payload, unsigned int length) {
       //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","saving config").set_retain().set_qos(1));
       mqttClient.publish("debug","saving config");
       Serial.println("saving config");
-      DynamicJsonDocument json(1024);
-      json["mqtt_server"] = mqtt_server;
-      json["mqtt_port"] = mqtt_port;
-      json["mqtt_user"] = mqtt_user;
-      json["mqtt_pass"] = mqtt_pass;
-      json["kc_wind"] = kc_wind;
-      json["windguru_uid"] = windguru_uid;
-      json["windguru_pass"] = windguru_pass;
-      json["vaneMaxADC"] = vaneMaxADC;
-      json["vaneOffset"] = vaneOffset;
-	  
-      File configFile = SPIFFS.open("/config.json", "w");
-      if (!configFile) {
-        Serial.println("failed to open config file for writing");
-      }
-
-      serializeJson(json, Serial);
-      serializeJson(json, configFile);
-      configFile.close();
+      SaveConfig(false);
       
       sendStatus = true;
     }
   }
 }
 
-//flag for saving data
-bool shouldSaveConfig = false;
+void SaveConfig(bool NeedReadParams) {
+    Serial.println("saving config");
+    
+    //read updated parameters
+    if (NeedReadParams) {
+      strcpy(mqtt_server, custom_mqtt_server.getValue());
+      strcpy(mqtt_port, custom_mqtt_port.getValue());
+      strcpy(mqtt_user, custom_mqtt_user.getValue());
+      strcpy(mqtt_pass, custom_mqtt_pass.getValue());
+      strcpy(kc_wind, custom_kc_wind.getValue());
+      strcpy(windguru_uid, custom_windguru_uid.getValue());
+      strcpy(windguru_pass, custom_windguru_pass.getValue());
+      strcpy(vaneMaxADC, custom_vaneMaxADC.getValue());
+      strcpy(vaneOffset, custom_vaneOffset.getValue());
+
+      strcpy(OWM_key, custom_OWM_key.getValue());
+      strcpy(OWM_lat, custom_OWM_lat.getValue());
+      strcpy(OWM_lon, custom_OWM_lon.getValue());
+      strcpy(WindyComApiKey, custom_WindyComApiKey.getValue());
+      strcpy(WindyComName, custom_WindyComName.getValue());
+      strcpy(WindyAppSecret, custom_WindyAppSecret.getValue());
+      strcpy(WindyAppID, custom_WindyAppID.getValue());
+    }
+    
+    //DynamicJsonDocument json(1024);
+    JsonDocument json;
+    json["mqtt_server"] = mqtt_server;
+    json["mqtt_port"] = mqtt_port;
+    json["mqtt_user"] = mqtt_user;
+    json["mqtt_pass"] = mqtt_pass;
+    json["kc_wind"] = kc_wind;
+    json["windguru_uid"] = windguru_uid;
+    json["windguru_pass"] = windguru_pass;
+	  json["vaneMaxADC"] = vaneMaxADC;
+	  json["vaneOffset"] = vaneOffset;
+
+    json["OWM_key"] = OWM_key;
+    json["OWM_lat"] = OWM_lat;
+    json["OWM_lon"] = OWM_lon;
+    json["WindyComApiKey"] = WindyComApiKey;
+    json["WindyComName"] = WindyComName;
+    json["WindyAppSecret"] = WindyAppSecret;
+    json["WindyAppID"] = WindyAppID;
+    
+    File configFile = SPIFFS.open("/config.json", "w");
+    if (!configFile) {
+      Serial.println("failed to open config file for writing");
+    }
+
+    serializeJson(json, Serial);
+    serializeJson(json, configFile);
+    configFile.close();
+    //end save parameters
+
+}
+
 
 //callback notifying us of the need to save config
 void saveConfigCallback () {
   Serial.println("Should save config");
-  shouldSaveConfig = true;
 }
 
-void SaveParamsCallback () {
+void saveParamsCallback () {
   Serial.println("Should save params");
-  shouldSaveConfig = true;
+  SaveConfig(true);
 }
+
 
 void setup() {
   Serial.begin(115200);
@@ -241,14 +315,15 @@ void setup() {
       if (configFile) {
         Serial.println("opened config file");
 
-        DynamicJsonDocument json(1024);
+        //DynamicJsonDocument json(1024);
+        JsonDocument json;
         DeserializationError error = deserializeJson(json, configFile);
         if (error) {
            Serial.print(F("deserializeJson() failed with code "));
            Serial.println(error.c_str());
         } else {
           serializeJson(json, Serial);
-          Serial.println("\nparsed json");
+          Serial.println("\nparsed json, size:" + String(json.size()));
           strcpy(mqtt_server, json["mqtt_server"]);
           strcpy(mqtt_port, json["mqtt_port"]);
           strcpy(mqtt_user, json["mqtt_user"]);
@@ -258,6 +333,17 @@ void setup() {
           strcpy(windguru_pass, json["windguru_pass"]);
           strcpy(vaneMaxADC, json["vaneMaxADC"]);
           strcpy(vaneOffset, json["vaneOffset"]);
+
+          if (json.size() > 9) { //compability with old config file
+            strcpy(OWM_key, json["OWM_key"]);
+            strcpy(OWM_lat, json["OWM_lat"]);
+            strcpy(OWM_lon, json["OWM_lon"]);
+            strcpy(WindyComApiKey, json["WindyComApiKey"]);
+            strcpy(WindyComName, json["WindyComName"]);
+            strcpy(WindyAppSecret, json["WindyAppSecret"]);
+            strcpy(WindyAppID, json["WindyAppID"]);
+          }
+
         }
       }
     }
@@ -265,19 +351,6 @@ void setup() {
     Serial.println("failed to mount FS");
   }
   //end read configuration
-
-  // The extra parameters to be configured (can be either global or just in the setup)
-  // After connecting, parameter.getValue() will get you the configured value
-  // id/name placeholder/prompt default length
-  WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 30);
-  WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
-  WiFiManagerParameter custom_mqtt_user("user", "mqtt user", mqtt_user, 20);
-  WiFiManagerParameter custom_mqtt_pass("pass", "mqtt password", mqtt_pass, 20);
-  WiFiManagerParameter custom_kc_wind("kc_wind", "wind correction 1-999%", kc_wind, 4);
-  WiFiManagerParameter custom_windguru_uid("windguru_uid", "windguru station UID", windguru_uid, 30);
-  WiFiManagerParameter custom_windguru_pass("windguru_pass", "windguru API pass", windguru_pass, 20);
-  WiFiManagerParameter custom_vaneMaxADC("vaneMaxADC", "Max ADC value 1-1024", vaneMaxADC, 5);
-  WiFiManagerParameter custom_vaneOffset("vaneOffset", "Wind vane offset 0-359", vaneOffset, 4);
 
 #ifdef MOSFETPIN
   pinMode(MOSFETPIN, OUTPUT);
@@ -294,12 +367,31 @@ void setup() {
   
   mqttClient.setCallback(callback);
 
-  WiFiManager wifiManager;
+  wifiManager.setBreakAfterConfig(true); //if this is set, it will exit after config, even if connection is unsuccessful.
   wifiManager.setSaveConfigCallback(saveConfigCallback);   //set config save notify callback
+  wifiManager.setSaveParamsCallback(saveParamsCallback);   //set params save notify callback
 
   std::vector<const char *> menu = {"wifi","info","param","update","close","sep","erase","restart","exit"};
   wifiManager.setMenu(menu); // custom menu, pass vector
-  
+
+  custom_mqtt_server.setValue(mqtt_server, 30);
+  custom_mqtt_port.setValue(mqtt_port, 6);
+  custom_mqtt_user.setValue(mqtt_user, 20);
+  custom_mqtt_pass.setValue(mqtt_pass, 20);
+  custom_kc_wind.setValue(kc_wind, 4);
+  custom_windguru_uid.setValue(windguru_uid, 30);
+  custom_windguru_pass.setValue(windguru_pass, 20);
+  custom_vaneMaxADC.setValue(vaneMaxADC, 5);
+  custom_vaneOffset.setValue(vaneOffset, 4);
+
+  custom_OWM_key.setValue(OWM_key, 36);
+  custom_OWM_lat.setValue(OWM_lat, 8);
+  custom_OWM_lon.setValue(OWM_lon, 8);
+  custom_WindyComApiKey.setValue(WindyComApiKey, 128);
+  custom_WindyComName.setValue(WindyComName, 16);
+  custom_WindyAppSecret.setValue(WindyAppSecret, 16);
+  custom_WindyAppID.setValue(WindyAppID,16);
+ 
 #ifdef DeepSleepMODE
   wifiManager.setTimeout(60); //sets timeout until configuration portal gets turned off
 #else 
@@ -312,11 +404,31 @@ void setup() {
   wifiManager.addParameter(&custom_mqtt_user);
   wifiManager.addParameter(&custom_mqtt_pass);
   wifiManager.addParameter(&custom_kc_wind);
+
+#ifdef USE_Windguru
   wifiManager.addParameter(&custom_windguru_uid);
   wifiManager.addParameter(&custom_windguru_pass);
+#endif
+
+#ifdef USE_OpenWeatherMap
+  wifiManager.addParameter(&custom_OWM_key);
+  wifiManager.addParameter(&custom_OWM_lat);
+  wifiManager.addParameter(&custom_OWM_lon);
+#else 
   wifiManager.addParameter(&custom_vaneMaxADC);
   wifiManager.addParameter(&custom_vaneOffset);
-  
+#endif
+
+#ifdef USE_Windy_com
+  wifiManager.addParameter(&custom_WindyComApiKey);
+  wifiManager.addParameter(&custom_WindyComName);
+#endif
+
+#ifdef USE_Windy_app
+  wifiManager.addParameter(&custom_WindyAppSecret);
+  wifiManager.addParameter(&custom_WindyAppID);
+#endif
+
   if(!wifiManager.autoConnect(NameAP, PasswordAP)) {
     Serial.println("failed to connect and hit timeout");
     delay(1000);
@@ -330,43 +442,6 @@ void setup() {
     delay(5000);
   } 
 
-  //read updated parameters
-  strcpy(mqtt_server, custom_mqtt_server.getValue());
-  strcpy(mqtt_port, custom_mqtt_port.getValue());
-  strcpy(mqtt_user, custom_mqtt_user.getValue());
-  strcpy(mqtt_pass, custom_mqtt_pass.getValue());
-  strcpy(kc_wind, custom_kc_wind.getValue());
-  strcpy(windguru_uid, custom_windguru_uid.getValue());
-  strcpy(windguru_pass, custom_windguru_pass.getValue());
-  strcpy(vaneMaxADC, custom_vaneMaxADC.getValue());
-  strcpy(vaneOffset, custom_vaneOffset.getValue());
-  
-  //save the custom parameters to FS
-  if (shouldSaveConfig) {
-    Serial.println("saving config");
-    DynamicJsonDocument json(1024);
-    json["mqtt_server"] = mqtt_server;
-    json["mqtt_port"] = mqtt_port;
-    json["mqtt_user"] = mqtt_user;
-    json["mqtt_pass"] = mqtt_pass;
-    json["kc_wind"] = kc_wind;
-    json["windguru_uid"] = windguru_uid;
-    json["windguru_pass"] = windguru_pass;
-	  json["vaneMaxADC"] = vaneMaxADC;
-	  json["vaneOffset"] = vaneOffset;
-    
-    File configFile = SPIFFS.open("/config.json", "w");
-    if (!configFile) {
-      Serial.println("failed to open config file for writing");
-    }
-
-    serializeJson(json, Serial);
-    serializeJson(json, configFile);
-    configFile.close();
-    //end save parameters
-  
-  }  
-  
   Serial.print("\nConnecting to WiFi"); 
   while ((WiFi.status() != WL_CONNECTED) && kRetries --) {
     delay(500);
@@ -516,6 +591,8 @@ void getSensors() {
   if (mqttClient.connected())
     mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/debug","ADC:" + String(a0) + " " + NTP.getTimeDateString ()).set_retain().set_qos(1));
 #endif     
+  
+#ifndef USE_OpenWeatherMap  
   //calDirection = map(a0, 0, atoi(vaneMaxADC), 0, 359) + atoi(vaneOffset);    
   
   // --------------- Wind Direction only for Ambient Weather WS-1080/WS-1090 !!!!!!!!!!!!-------------------
@@ -578,6 +655,7 @@ void getSensors() {
   
   if(calDirection > 360)
     calDirection = calDirection - 360;
+#endif     
     
   if (meterWind > 0) { //already made measurement wind power
     pubString = "{\"Min\": "+String(WindMin, 2)+", "+"\"Avr\": "+String(WindAvr/meterWind, 2)+", "+"\"Max\": "+String(WindMax, 2)+", "+"\"Dir\": "+String(calDirection) + "}";
@@ -585,7 +663,7 @@ void getSensors() {
     if (mqttClient.connected())
       //mqttClient.publish(MQTT::Publish(MQTT_TOPIC"/wind", message_buff).set_retain().set_qos(1));
       mqttClient.publish("wind", msg_buff);
-    Serial.print(" Wind Min: " + String(WindMin, 2) + " Avr: " + String(WindAvr/meterWind, 2) + " Max: " + String(WindMax, 2) + " Dir: " + String(calDirection)+ " ");
+    Serial.println(" Wind Min: " + String(WindMin, 2) + " Avr: " + String(WindAvr/meterWind, 2) + " Max: " + String(WindMax, 2) + " Dir: " + String(calDirection)+ " ");
   
     WindNarodmon = WindAvr/meterWind;
   }
@@ -696,6 +774,18 @@ void timedTasks() {
     //sensorReport = true;
     getSensors();
 
+#ifdef USE_OpenWeatherMap
+    if (kOpenWeatherMap == 0) {
+       if (!GetOpenWeatherMap())
+        errors_count++;
+    }
+    
+    if (kOpenWeatherMap >= 9) 
+       kOpenWeatherMap = 0;
+    else
+       kOpenWeatherMap++;
+#endif
+
 #ifdef USE_Narodmon
     if (kNarodmon >= 4) {
         if (SendToNarodmon()) kNarodmon = 0;
@@ -713,6 +803,7 @@ void timedTasks() {
 #ifdef USE_Windy_app
      if (!SendToWindyApp()) errors_count++;
 #endif
+
   }
 }
 
@@ -833,7 +924,7 @@ bool SendToWindyCom() { // send info to http://stations.windy.com/stations
   unsigned long time;
   
   if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
-     Link = "http://stations.windy.com/pws/update/" + WindyComApiKey + "?name=AzovKite&";
+     Link = "http://stations.windy.com/pws/update/" + String(WindyComApiKey) + "?name=" + String(WindyComName) + "&";
     
      //wind speed during interval (knots)
      if (meterWind > 0)
@@ -873,7 +964,7 @@ bool SendToWindyApp() { // send info to http://windy.app/
   String getData= "", Link;
   
   if (WiFi.status() == WL_CONNECTED) { //Check WiFi connection status
-     Link = "/apiV9.php?method=addCustomMeteostation&secret=" + WindyAppSecret + "&i=" + WindyAppID +"&";
+     Link = "/apiV9.php?method=addCustomMeteostation&secret=" + String(WindyAppSecret) + "&i=" + String(WindyAppID) +"&";
      if (meterWind > 0)
        getData = "d5=" + String(map(calDirection, 0, 359, 1, 1024)) + "&m=" + String(WindMin *10, 0) + "&a=" + String(WindAvr/meterWind *10, 0) + "&g=" + String(WindMax *10, 0);
      
@@ -928,4 +1019,51 @@ bool SendToWindyApp() { // send info to http://windy.app/
    }
     
   return true; //done
+}
+
+//http://api.openweathermap.org/data/2.5/weather?lat=44.34&lon=10.99&appid={API key}&units=metric
+// "wind": {
+//    "speed": 0.62,
+//    "deg": 349,
+//    "gust": 1.18
+//  },
+bool GetOpenWeatherMap() {
+    WiFiClient client;
+    HTTPClient http;
+
+    if (http.begin(client, "http://api.openweathermap.org/data/2.5/weather?lat=" + String(OWM_lat) + "&lon=" + String(OWM_lon) + "&appid=" + String(OWM_key) + "&units=metric")) {
+      int httpCode = http.GET();
+
+      if (httpCode > 0) {
+        //Serial.printf("[HTTP] GET... code: %d\n", httpCode);
+
+        if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+          String payload = http.getString();
+          //Serial.println(payload);
+
+          // Parse JSON
+          JsonDocument doc;
+          DeserializationError error = deserializeJson(doc, payload);
+
+          if (error) {
+            Serial.print("Error parsing JSON: ");
+            Serial.println(error.c_str());
+          } else {
+            calDirection = doc["wind"]["deg"].as<int>();
+            Serial.println("Wind deg: " + String(calDirection));
+          }
+        }
+      } else {
+        Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+        if (mqttClient.connected())
+          mqttClient.publish("debug", "openweathermap.org http connection failed");
+      }
+
+      http.end();
+      return true;
+    } else {
+      Serial.println("[HTTP] Unable to connect");
+      return false;
+    }
+
 }
