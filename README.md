@@ -1,5 +1,8 @@
-# esp8266-WindStation
+# esp8266-WindStation (online anemometer)
 Port for ESP32 here: https://github.com/zpukr/esp32-WindStation <br>
+
+v1.8 <br>
+Added support for the openweathermap.org service to obtain approximate wind direction for budget stations not equipped with a physical wind direction sensor. All main parameters are moved to the configuration file instead of hardcoded (re-configuration of the device may be required!). Cleaned up the code
 
 v1.5 <br>
 Add support windy.com and windy.app
